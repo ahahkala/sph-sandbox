@@ -1,6 +1,6 @@
 // Wires the control panel to the live params object and app callbacks.
-// callbacks: { backend, maxCount, onReset(preset), onCountChange(),
-//              onPhysicsChange(), onPauseToggle(), onDuckToggle() }
+// callbacks: { backend, maxCount, onRestart(preset), onCountChange(),
+//              onPhysicsChange(), onPauseToggle(), onDucksClear() }
 
 import { DT_FORCE, DT_PBF } from "../config.js";
 
@@ -34,7 +34,6 @@ export function setupControls(params, callbacks) {
     q.set("phys", params.physics);
     q.set("mode", params.renderMode);
     q.set("n", params.count);
-    q.set("duck", params.duck ? "1" : "0");
     q.set("gravity", params.gravity);
     q.set("gravdir", params.gravityCenter ? "center" : "down");
     q.set("viscosity", params.viscosity);
@@ -170,56 +169,62 @@ export function setupControls(params, callbacks) {
   modeButtons.dots.addEventListener("click", () => setMode("dots"));
   setMode(params.renderMode);
 
-  // obstacle drawing / erasing (mutually exclusive toggles)
-  const drawBtn = $("obstacle-draw");
-  const eraseBtn = $("obstacle-erase");
-  const syncTools = () => {
-    drawBtn.classList.toggle("active", params.drawObstacles);
-    eraseBtn.classList.toggle("active", params.eraseObstacles);
-    document.getElementById("glcanvas").style.cursor =
-      params.drawObstacles || params.eraseObstacles ? "cell" : "crosshair";
+  // pointer tools: obstacle draw/erase and duck add/remove. Toggling one on
+  // turns the others off, so the pointer always has a single meaning; with
+  // none active the pointer pushes and pulls fluid.
+  const tools = {
+    drawObstacles: $("obstacle-draw"),
+    eraseObstacles: $("obstacle-erase"),
+    addDucks: $("duck-add"),
+    removeDucks: $("duck-remove"),
   };
-  drawBtn.addEventListener("click", () => {
-    params.drawObstacles = !params.drawObstacles;
-    if (params.drawObstacles) params.eraseObstacles = false;
-    syncTools();
-  });
-  eraseBtn.addEventListener("click", () => {
-    params.eraseObstacles = !params.eraseObstacles;
-    if (params.eraseObstacles) params.drawObstacles = false;
-    syncTools();
-  });
+  const drawBtn = tools.drawObstacles;
+  const eraseBtn = tools.eraseObstacles;
+  const syncTools = () => {
+    let active = false;
+    for (const [flag, btn] of Object.entries(tools)) {
+      btn.classList.toggle("active", params[flag]);
+      active = active || params[flag];
+    }
+    document.getElementById("glcanvas").style.cursor = active ? "cell" : "crosshair";
+  };
+  for (const [flag, btn] of Object.entries(tools)) {
+    btn.addEventListener("click", () => {
+      const on = !params[flag];
+      for (const other of Object.keys(tools)) params[other] = false;
+      params[flag] = on;
+      syncTools();
+    });
+  }
   $("obstacle-clear").addEventListener("click", () => {
     params.obstacles.length = 0;
   });
+  $("duck-clear").addEventListener("click", () => callbacks.onDucksClear());
   syncTools();
-
-  // rubber duck rigid body
-  const duckButtons = { on: $("duck-on"), off: $("duck-off") };
-  const setDuck = (on, fire = true) => {
-    params.duck = on;
-    duckButtons.on.classList.toggle("active", on);
-    duckButtons.off.classList.toggle("active", !on);
-    if (fire) callbacks.onDuckToggle();
-  };
-  duckButtons.on.addEventListener("click", () => setDuck(true));
-  duckButtons.off.addEventListener("click", () => setDuck(false));
-  setDuck(params.duck, false);
 
   // scene preset
   const presetEl = $("preset");
-  presetEl.addEventListener("change", () => callbacks.onReset(presetEl.value));
+  presetEl.addEventListener("change", () => callbacks.onRestart(presetEl.value));
 
-  // pause / reset
+  // pause / restart / reset
   const pauseBtn = $("pause");
   const syncPause = (paused) => {
     pauseBtn.classList.toggle("active", paused);
     pauseBtn.textContent = paused ? "Resume" : "Pause";
   };
   pauseBtn.addEventListener("click", () => syncPause(callbacks.onPauseToggle()));
-  $("reset").addEventListener("click", () => callbacks.onReset(presetEl.value));
+  // Restart re-seeds the current scene, keeping every setting
+  $("restart").addEventListener("click", () => callbacks.onRestart(presetEl.value));
+  // Reset goes back to the factory settings. Every default lives in
+  // createParams() and in the controls' own initialisation, and the URL is
+  // rewritten from params on each change, so reloading without a query string
+  // is what actually restores them all — patching params in place would leave
+  // the sliders, tools and solver allocation to be re-synced by hand.
+  $("reset").addEventListener("click", () => {
+    location.href = location.pathname;
+  });
 
-  // arrow keys apply a steering force to the duck while held
+  // arrow keys apply a steering force to every duck while held
   const arrows = {
     ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
   };
@@ -239,7 +244,7 @@ export function setupControls(params, callbacks) {
       syncPause(callbacks.onPauseToggle());
       syncURL();
     } else if (e.code === "KeyR") {
-      callbacks.onReset(presetEl.value);
+      callbacks.onRestart(presetEl.value);
     } else if (e.code === "KeyO") {
       drawBtn.click();
     } else if (e.code === "KeyE") {
@@ -261,7 +266,7 @@ export function setupControls(params, callbacks) {
     syncThrust();
   });
 
-  // restore scene/physics/count/mode/duck/paused from the URL — the
+  // restore scene/physics/count/mode/paused from the URL — the
   // numeric sliders and gravity direction were already restored above,
   // before their controls bound to params
   if (query.has("scene") && [...presetEl.options].some((o) => o.value === query.get("scene"))) {
@@ -270,13 +275,15 @@ export function setupControls(params, callbacks) {
   setPhysics(query.get("phys") || params.physics, false);
   applyCount(query.get("n") ? parseInt(query.get("n"), 10) : params.count);
   if (query.get("mode") === "dots" || query.get("mode") === "liquid") setMode(query.get("mode"));
-  if (query.has("duck")) setDuck(query.get("duck") !== "0", false);
   if (query.get("paused") === "1") syncPause(callbacks.onPauseToggle());
 
   // keep the address bar in sync with every control change so the current
   // state is always shareable/reloadable; delegated on the panel so it
-  // fires after the control's own handler has already updated params
-  syncURL();
+  // fires after the control's own handler has already updated params.
+  // A page opened without a query string keeps a clean URL until something
+  // is actually changed — that's what makes Reset's clearing of the query
+  // stick instead of being overwritten with the defaults right away.
+  if (query.toString()) syncURL();
   $("ui-content").addEventListener("input", syncURL);
   $("ui-content").addEventListener("change", syncURL);
   $("ui-content").addEventListener("click", syncURL);

@@ -100,17 +100,26 @@ export class WGPURenderer {
     });
     device.queue.writeBuffer(this.duckVB, 0, DUCK_MESH);
     this.duckData = new Float32Array(8); // struct DuckDraw (32 bytes)
-    this.uDuck = this.device.createBuffer({
-      size: this.duckData.byteLength,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this.duckBind = device.createBindGroup({
-      layout: this.pDuck.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.uDuck } }],
-    });
+    // one uniform buffer per duck: the poses differ within a frame, and
+    // queue.writeBuffer would otherwise leave every draw with the last pose
+    this.duckSlots = [];
 
     this.fieldTex = null;
     this.bindCache = new WeakMap(); // per posVel buffer bind groups
+  }
+
+  mkDuckSlot() {
+    const buf = this.device.createBuffer({
+      size: this.duckData.byteLength,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    return {
+      buf,
+      bind: this.device.createBindGroup({
+        layout: this.pDuck.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: buf } }],
+      }),
+    };
   }
 
   mkUniform() {
@@ -186,8 +195,10 @@ export class WGPURenderer {
     }
     dev.queue.writeBuffer(this.obstacleBuf, 0, this.obstacleData);
 
-    const pose = p.duckPose;
-    if (pose) {
+    const poses = p.duckPoses;
+    for (let i = 0; i < poses.length; i++) {
+      if (!this.duckSlots[i]) this.duckSlots[i] = this.mkDuckSlot();
+      const pose = poses[i];
       const dd = this.duckData;
       dd[0] = pose.x;
       dd[1] = pose.y;
@@ -196,14 +207,16 @@ export class WGPURenderer {
       dd[4] = world.w;
       dd[5] = world.h;
       dd[6] = pose.scale;
-      dev.queue.writeBuffer(this.uDuck, 0, dd);
+      dev.queue.writeBuffer(this.duckSlots[i].buf, 0, dd);
     }
     const drawDuck = (pass) => {
-      if (!pose) return;
+      if (poses.length === 0) return;
       pass.setPipeline(this.pDuck);
-      pass.setBindGroup(0, this.duckBind);
       pass.setVertexBuffer(0, this.duckVB);
-      pass.draw(DUCK_MESH.length / DUCK_STRIDE);
+      for (let i = 0; i < poses.length; i++) {
+        pass.setBindGroup(0, this.duckSlots[i].bind);
+        pass.draw(DUCK_MESH.length / DUCK_STRIDE);
+      }
     };
 
     const enc = dev.createCommandEncoder();

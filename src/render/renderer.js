@@ -191,17 +191,19 @@ export class Renderer {
   }
 
   renderDuck(world) {
-    const pose = this.params.duckPose;
-    if (!pose) return;
+    const poses = this.params.duckPoses;
+    if (poses.length === 0) return;
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.useProgram(this.progDuck);
     gl.uniform2f(this.uDuck.uWorld, world.w, world.h);
-    gl.uniform4f(this.uDuck.uPose, pose.x, pose.y, Math.cos(pose.angle), Math.sin(pose.angle));
-    gl.uniform1f(this.uDuck.uScale, pose.scale);
     gl.bindVertexArray(this.duckVAO);
-    gl.drawArrays(gl.TRIANGLES, 0, DUCK_MESH.length / DUCK_STRIDE);
+    for (const pose of poses) {
+      gl.uniform4f(this.uDuck.uPose, pose.x, pose.y, Math.cos(pose.angle), Math.sin(pose.angle));
+      gl.uniform1f(this.uDuck.uScale, pose.scale);
+      gl.drawArrays(gl.TRIANGLES, 0, DUCK_MESH.length / DUCK_STRIDE);
+    }
     gl.bindVertexArray(null);
   }
 }

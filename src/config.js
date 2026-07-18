@@ -51,14 +51,18 @@ export function createParams() {
     // interaction
     pointerRadius: 8, // world units at the reference world size
     pointerStrength: 100,
+    // pointer tools; at most one is active at a time (see setupControls)
     drawObstacles: false,
     eraseObstacles: false, // eraser tool: drag removes obstacles near the cursor
+    addDucks: false, // click spawns a duck at the cursor
+    removeDucks: false, // click removes the duck under the cursor
     obstacleRadius: 3, // drawn wall stamp radius, world units at the reference world size
     obstacles: [], // {x, y, r} in world units
-    duck: false, // rubber duck rigid body floating on the fluid
-    duckCircles: [], // duck hull circles {x, y, r}, appended to obstacles by the solvers
-    duckPose: null, // {x, y, angle, scale} published by the Duck body for the renderers
-    duckThrust: { x: 0, y: 0 }, // arrow-key force direction on the duck (unit-ish)
+    // rubber ducks: middle-click spawns one at the cursor, middle-click on a
+    // duck removes it (see DuckFlock)
+    duckCircles: [], // hull circles {x, y, r} of all ducks, appended to obstacles by the solvers
+    duckPoses: [], // {x, y, angle, scale} per duck, for the renderers
+    duckThrust: { x: 0, y: 0 }, // arrow-key force direction on the ducks (unit-ish)
 
     // rendering
     renderMode: "liquid", // "liquid" | "dots"
