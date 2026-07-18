@@ -1,8 +1,9 @@
 // Force-SPH simulation GLSL (ES 3.00). Particle state lives in a posVel
 // texture (RGBA32F: x, y, vx, vy), one texel per particle.
 //
-// Neighbor search: a uniform grid texture pair stores up to 8 particle
-// indices per cell (4 RGBA channels x 2 textures), built each substep by
+// Neighbor search: a uniform grid texture pair (h/2 cells, 5x5 gather)
+// stores up to 8 particle indices per cell (4 RGBA channels x 2 textures),
+// built each substep by
 // scattering particles as 1px points with stencil routing — every fragment
 // increments the cell's stencil whether the test passes or not, so a
 // fragment's pre-increment value is its arrival ordinal in the cell; pass k
@@ -192,8 +193,8 @@ void main() {
   float rhoNear = uMass * uSpiky3 * uH * uH * uH;
   float omega = 0.0;
 
-  for (int gy = -1; gy <= 1; gy++)
-  for (int gx = -1; gx <= 1; gx++) {
+  for (int gy = -2; gy <= 2; gy++)
+  for (int gx = -2; gx <= 2; gx++) {
     ivec2 c = cc + ivec2(gx, gy);
     if (c.x < 0 || c.y < 0 || c.x >= uGridDims.x || c.y >= uGridDims.y) continue;
     vec4 slotsA = texelFetch(uGridA, c, 0);
@@ -252,8 +253,8 @@ void main() {
 
   vec2 f = vec2(0.0);
   vec2 gradAbsOmega = vec2(0.0);
-  for (int gy = -1; gy <= 1; gy++)
-  for (int gx = -1; gx <= 1; gx++) {
+  for (int gy = -2; gy <= 2; gy++)
+  for (int gx = -2; gx <= 2; gx++) {
     ivec2 c = cc + ivec2(gx, gy);
     if (c.x < 0 || c.y < 0 || c.x >= uGridDims.x || c.y >= uGridDims.y) continue;
     vec4 slotsA = texelFetch(uGridA, c, 0);

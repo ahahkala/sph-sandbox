@@ -63,8 +63,8 @@ void main() {
   float gradSum = 0.0;
   float invRho0 = 1.0 / uRho0;
 
-  for (int gy = -1; gy <= 1; gy++)
-  for (int gx = -1; gx <= 1; gx++) {
+  for (int gy = -2; gy <= 2; gy++)
+  for (int gx = -2; gx <= 2; gx++) {
     ivec2 c = cc + ivec2(gx, gy);
     if (c.x < 0 || c.y < 0 || c.x >= uGridDims.x || c.y >= uGridDims.y) continue;
     vec4 slotsA = texelFetch(uGridA, c, 0);
@@ -113,8 +113,8 @@ void main() {
   ivec2 cc = clamp(ivec2(floor(pos / uCellSize)), ivec2(0), uGridDims - 1);
 
   vec2 dp = vec2(0.0);
-  for (int gy = -1; gy <= 1; gy++)
-  for (int gx = -1; gx <= 1; gx++) {
+  for (int gy = -2; gy <= 2; gy++)
+  for (int gx = -2; gx <= 2; gx++) {
     ivec2 c = cc + ivec2(gx, gy);
     if (c.x < 0 || c.y < 0 || c.x >= uGridDims.x || c.y >= uGridDims.y) continue;
     vec4 slotsA = texelFetch(uGridA, c, 0);
@@ -167,8 +167,8 @@ void main() {
 
   vec2 xsph = vec2(0.0);
   if (uXsph > 0.0) {
-    for (int gy = -1; gy <= 1; gy++)
-    for (int gx = -1; gx <= 1; gx++) {
+    for (int gy = -2; gy <= 2; gy++)
+    for (int gx = -2; gx <= 2; gx++) {
       ivec2 c = cc + ivec2(gx, gy);
       if (c.x < 0 || c.y < 0 || c.x >= uGridDims.x || c.y >= uGridDims.y) continue;
       vec4 slotsA = texelFetch(uGridA, c, 0);

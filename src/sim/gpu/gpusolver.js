@@ -31,6 +31,11 @@ export class GPUSolver {
 
     const h = params.h;
     this.h = h;
+    // Grid cells are h/2 with a 5x5 gather (not h with 3x3): the 8-slot cap
+    // per cell then only overflows near 10x rest density instead of ~2.4x,
+    // which keeps neighborhoods complete (and forces symmetric) under
+    // compression — dropped neighbors read as jitter vs the WebGPU exact grid.
+    this.cellSize = h / 2;
     this.kern = {
       poly6: 4 / (Math.PI * h ** 8),
       spiky3: 10 / (Math.PI * h ** 5),
@@ -122,8 +127,8 @@ export class GPUSolver {
 
   resizeGrid() {
     const gl = this.gl;
-    const cols = Math.max(1, Math.ceil(this.world.w / this.h) + 1);
-    const rows = Math.max(1, Math.ceil(this.world.h / this.h) + 1);
+    const cols = Math.max(1, Math.ceil(this.world.w / this.cellSize) + 1);
+    const rows = Math.max(1, Math.ceil(this.world.h / this.cellSize) + 1);
     if (cols === this.gridCols && rows === this.gridRows) return;
     this.gridCols = cols;
     this.gridRows = rows;
@@ -276,7 +281,7 @@ export class GPUSolver {
     gl.uniform1i(u.uTexWidth, TEX_WIDTH);
     gl.uniform1i(u.uCount, this.count);
     gl.uniform2i(u.uGridDims, this.gridCols, this.gridRows);
-    gl.uniform1f(u.uCellSize, this.h);
+    gl.uniform1f(u.uCellSize, this.cellSize);
     gl.uniform1f(u.uH, this.h);
     gl.uniform1f(u.uH2, this.h * this.h);
   }
@@ -328,7 +333,7 @@ export class GPUSolver {
     this.bindTex(this.u.scatter.uPosVel, 0, posVelTex);
     gl.uniform1i(this.u.scatter.uTexWidth, TEX_WIDTH);
     gl.uniform2f(this.u.scatter.uGridDims, this.gridCols, this.gridRows);
-    gl.uniform1f(this.u.scatter.uCellSize, this.h);
+    gl.uniform1f(this.u.scatter.uCellSize, this.cellSize);
 
     // stencil routing (see header comment in shaders.js)
     gl.enable(gl.STENCIL_TEST);

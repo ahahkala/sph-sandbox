@@ -101,6 +101,9 @@ Stable at frame-scale timesteps — that is its selling point.
 **Neighbor search, WebGL2**: particles scatter their indices into a grid
 texture pair holding 8 slots/cell via stencil routing (every fragment
 increments the cell's stencil; pass *k* keeps arrival ordinal *k*).
+Cells are h/2 with a 5×5 gather, so the slot cap only bites near 10×
+rest density — dropped neighbors would break force symmetry and show
+up as jitter relative to the WebGPU exact grid.
 
 **Neighbor search, WebGPU**: exact counting sort — atomic per-cell counts,
 a three-dispatch prefix sum (per-workgroup scan, serial block-sum scan,
