@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>GPU solver tests</title></head>
+<body style="font-family:monospace;background:#111;color:#ddd;padding:16px">
+<pre id="out">running…</pre>
+<script type="module">
+// Standalone GPU physics checks (no CPU reference — physics invariants).
+// Run: npm test   (headless Chrome via tools/test-headless.mjs)
+import { GPUSolver } from "../src/sim/gpu/gpusolver.js";
+import { createParams } from "../src/config.js";
+import { spawners } from "../src/sim/spawn.js";
+
+const out = document.getElementById("out");
+const lines = [];
+let failures = 0;
+function log(s) { lines.push(s); out.textContent = lines.join("\n"); }
+function check(name, ok, detail = "") {
+  log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
+  if (!ok) failures++;
+}
+
+function makeGL() {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 8;
+  return canvas.getContext("webgl2", { antialias: false });
+}
+
+function makeState(n, world, h) {
+  return {
+    px: new Float32Array(n), py: new Float32Array(n),
+    vx: new Float32Array(n), vy: new Float32Array(n),
+    count: n, world, h,
+  };
+}
+
+function stats(rb, world) {
+  const n = rb.px.length;
+  let nan = false, inBounds = true, sumY = 0, sumSpeed = 0, maxSpeed = 0;
+  for (let i = 0; i < n; i++) {
+    if (!Number.isFinite(rb.px[i]) || !Number.isFinite(rb.py[i]) ||
+        !Number.isFinite(rb.vx[i]) || !Number.isFinite(rb.vy[i])) nan = true;
+    if (rb.px[i] < -1 || rb.px[i] > world.w + 1 ||
+        rb.py[i] < -1 || rb.py[i] > world.h + 1) inBounds = false;
+    sumY += rb.py[i];
+    const sp = Math.hypot(rb.vx[i], rb.vy[i]);
+    sumSpeed += sp;
+    if (sp > maxSpeed) maxSpeed = sp;
+  }
+  return { nan, inBounds, avgY: sumY / n, avgSpeed: sumSpeed / n, maxSpeed };
+}
+
+function asciiMap(rb, world, label) {
+  const W = 60, H = 14;
+  const map = new Float32Array(W * H);
+  for (let i = 0; i < rb.px.length; i++) {
+    const gx = Math.min(W - 1, Math.max(0, Math.floor(rb.px[i] / world.w * W)));
+    const gy = Math.min(H - 1, Math.max(0, Math.floor(rb.py[i] / world.h * H)));
+    map[gy * W + gx]++;
+  }
+  const glyphs = " .:-=+*#%@";
+  let peak = 1;
+  for (const v of map) if (v > peak) peak = v;
+  log("      " + label + ":");
+  for (let y = 0; y < H; y++) {
+    let line = "";
+    for (let x = 0; x < W; x++) {
+      const t = map[y * W + x] / peak;
+      line += glyphs[Math.min(glyphs.length - 1, Math.round(t * (glyphs.length - 1)))];
+    }
+    log("      |" + line + "|");
+  }
+}
+
+function run(seconds, solver, params) {
+  const steps = Math.round(seconds / params.dt);
+  for (let i = 0; i < steps; i++) solver.step(params.dt);
+}
+
+async function main() {
+  if (!makeGL()) { check("WebGL2 available", false); return finish(); }
+  check("WebGL2 available", true);
+
+  // --- force mode: repulsion sign ---------------------------------------
+  {
+    const params = createParams();
+    params.count = 2;
+    params.gravity = 0;
+    params.vorticity = 0;
+    const world = { w: 50, h: 70 };
+    const gpu = new GPUSolver(makeGL(), world, params);
+    const st = makeState(2, world, params.h);
+    st.px[0] = 25 - 0.4; st.py[0] = 35;
+    st.px[1] = 25 + 0.4; st.py[1] = 35;
+    gpu.seed(st);
+    for (let i = 0; i < 20; i++) gpu.step(params.dt);
+    const rb = gpu.readback();
+    const gap = rb.px[1] - rb.px[0];
+    check("force: pressure repels", gap > 0.8, `gap 0.800 -> ${gap.toFixed(3)}`);
+  }
+
+  // --- force mode: dam break settles, energy decays ---------------------
+  {
+    const params = createParams();
+    params.count = 3000;
+    const world = { w: 100, h: 70 };
+    const gpu = new GPUSolver(makeGL(), world, params);
+    const st = makeState(3000, world, params.h);
+    spawners.damBreak(st);
+    gpu.seed(st);
+    run(3, gpu, params);
+    const mid = stats(gpu.readback(), world);
+    run(3, gpu, params);
+    const end = stats(gpu.readback(), world);
+    check("force: no NaN after 6s", !end.nan);
+    check("force: in bounds", end.inBounds);
+    check("force: settled near floor", end.avgY > world.h * 0.6, `avg y ${end.avgY.toFixed(1)} / ${world.h}`);
+    check("force: energy decays", end.avgSpeed < mid.avgSpeed,
+      `avg speed ${mid.avgSpeed.toFixed(2)} @3s -> ${end.avgSpeed.toFixed(2)} @6s`);
+    asciiMap(gpu.readback(), world, "force dam break @6s");
+  }
+
+  // --- boundary calmness: a pre-settled pool should stay nearly still ---
+  {
+    const params = createParams();
+    params.count = 2000;
+    const world = { w: 100, h: 70 };
+    const gpu = new GPUSolver(makeGL(), world, params);
+    const st = makeState(2000, world, params.h);
+    // full-width pool resting on the floor, no initial velocity
+    const spacing = params.h * 0.55;
+    const cols = Math.floor((world.w - 4) / spacing);
+    for (let i = 0; i < 2000; i++) {
+      st.px[i] = 2 + (i % cols) * spacing;
+      st.py[i] = world.h - 2 - Math.floor(i / cols) * spacing;
+    }
+    gpu.seed(st);
+    run(8, gpu, params);
+    const rb = gpu.readback();
+    const s8 = stats(rb, world);
+    // compare jitter near the walls (bottom band + side bands) against the
+    // fluid interior — boundary handling is the suspect, surface simmer is not
+    let wallSum = 0, wallN = 0, midSum = 0, midN = 0;
+    for (let i = 0; i < 2000; i++) {
+      const sp = Math.hypot(rb.vx[i], rb.vy[i]);
+      const nearWall = rb.py[i] > world.h - 4 || rb.px[i] < 4 || rb.px[i] > world.w - 4;
+      const surface = rb.py[i] < world.h - 12; // top of the ~16-deep pool
+      if (nearWall) { wallSum += sp; wallN++; }
+      else if (!surface) { midSum += sp; midN++; }
+    }
+    const wallAvg = wallSum / Math.max(wallN, 1);
+    const midAvg = midSum / Math.max(midN, 1);
+    check("boundary: pool stays calm", s8.avgSpeed < 1.5 && s8.maxSpeed < 8,
+      `avg ${s8.avgSpeed.toFixed(2)}, max ${s8.maxSpeed.toFixed(1)} @8s`);
+    check("boundary: walls no jumpier than interior", wallAvg < midAvg * 1.6 + 0.3,
+      `near-wall avg ${wallAvg.toFixed(2)} (${wallN}p) vs interior ${midAvg.toFixed(2)} (${midN}p)`);
+    check("boundary: pool stays put", !s8.nan && s8.inBounds);
+  }
+
+  // --- vorticity confinement: stays stable at max slider ----------------
+  {
+    const params = createParams();
+    params.count = 2000;
+    params.vorticity = 6;
+    const world = { w: 100, h: 70 };
+    const gpu = new GPUSolver(makeGL(), world, params);
+    const st = makeState(2000, world, params.h);
+    spawners.damBreak(st);
+    gpu.seed(st);
+    run(4, gpu, params);
+    const s = stats(gpu.readback(), world);
+    check("vorticity: no NaN, in bounds", !s.nan && s.inBounds);
+    check("vorticity: no runaway energy", s.avgSpeed < 15, `avg speed ${s.avgSpeed.toFixed(2)}`);
+  }
+
+  // --- obstacles: fluid stays out of a drawn circle ---------------------
+  {
+    const params = createParams();
+    params.count = 2000;
+    const world = { w: 100, h: 70 };
+    const ob = { x: 50, y: 55, r: 10 };
+    params.obstacles.push(ob);
+    const gpu = new GPUSolver(makeGL(), world, params);
+    const st = makeState(2000, world, params.h);
+    spawners.damBreak(st);
+    gpu.seed(st);
+    run(4, gpu, params);
+    const rb = gpu.readback();
+    let inside = 0, minDist = Infinity;
+    for (let i = 0; i < 2000; i++) {
+      const d = Math.hypot(rb.px[i] - ob.x, rb.py[i] - ob.y);
+      if (d < ob.r - 0.1) inside++;
+      if (d < minDist) minDist = d;
+    }
+    check("obstacle: no particles inside circle", inside === 0,
+      `${inside} inside, closest ${minDist.toFixed(2)} (r ${ob.r})`);
+    const s = stats(rb, world);
+    check("obstacle: sim stays sane", !s.nan && s.inBounds);
+  }
+
+  // --- PBF mode: overlap relaxes toward rest spacing --------------------
+  {
+    const params = createParams();
+    params.physics = "pbf";
+    params.dt = 1 / 60;
+    params.count = 100;
+    params.gravity = 0;
+    const world = { w: 50, h: 70 };
+    const gpu = new GPUSolver(makeGL(), world, params);
+    const st = makeState(100, world, params.h);
+    // 10x10 cluster at half the rest spacing: heavily over-compressed
+    const tight = params.h * 0.275;
+    for (let i = 0; i < 100; i++) {
+      st.px[i] = 22 + (i % 10) * tight;
+      st.py[i] = 30 + Math.floor(i / 10) * tight;
+    }
+    gpu.seed(st);
+    const spread0 = clusterSpread(gpu.readback());
+    run(1, gpu, params);
+    const rb = gpu.readback();
+    const spread1 = clusterSpread(rb);
+    const s = stats(rb, world);
+    check("pbf: over-compressed cluster expands", spread1 > spread0 * 1.2,
+      `spread ${spread0.toFixed(2)} -> ${spread1.toFixed(2)}`);
+    check("pbf: cluster stays finite", !s.nan && s.inBounds);
+  }
+
+  // --- PBF mode: dam break settles --------------------------------------
+  {
+    const params = createParams();
+    params.physics = "pbf";
+    params.dt = 1 / 60;
+    params.count = 3000;
+    const world = { w: 100, h: 70 };
+    const gpu = new GPUSolver(makeGL(), world, params);
+    const st = makeState(3000, world, params.h);
+    spawners.damBreak(st);
+    gpu.seed(st);
+    run(4, gpu, params);
+    const mid = stats(gpu.readback(), world);
+    run(4, gpu, params);
+    const end = stats(gpu.readback(), world);
+    check("pbf: no NaN after 8s", !end.nan);
+    check("pbf: in bounds", end.inBounds);
+    check("pbf: settled near floor", end.avgY > world.h * 0.6, `avg y ${end.avgY.toFixed(1)} / ${world.h}`);
+    check("pbf: energy decays", end.avgSpeed < Math.max(mid.avgSpeed, 3),
+      `avg speed ${mid.avgSpeed.toFixed(2)} @4s -> ${end.avgSpeed.toFixed(2)} @8s`);
+    asciiMap(gpu.readback(), world, "pbf dam break @8s");
+  }
+
+  // --- PBF boundary calmness: same resting pool as the force-mode test --
+  {
+    const params = createParams();
+    params.physics = "pbf";
+    params.dt = 1 / 60;
+    params.count = 2000;
+    const world = { w: 100, h: 70 };
+    const gpu = new GPUSolver(makeGL(), world, params);
+    const st = makeState(2000, world, params.h);
+    const spacing = params.h * 0.55;
+    const cols = Math.floor((world.w - 4) / spacing);
+    for (let i = 0; i < 2000; i++) {
+      st.px[i] = 2 + (i % cols) * spacing;
+      st.py[i] = world.h - 2 - Math.floor(i / cols) * spacing;
+    }
+    gpu.seed(st);
+    run(8, gpu, params);
+    const rb = gpu.readback();
+    const s8 = stats(rb, world);
+    let wallSum = 0, wallN = 0, midSum = 0, midN = 0;
+    for (let i = 0; i < 2000; i++) {
+      const sp = Math.hypot(rb.vx[i], rb.vy[i]);
+      const nearWall = rb.py[i] > world.h - 4 || rb.px[i] < 4 || rb.px[i] > world.w - 4;
+      const surface = rb.py[i] < world.h - 12;
+      if (nearWall) { wallSum += sp; wallN++; }
+      else if (!surface) { midSum += sp; midN++; }
+    }
+    const wallAvg = wallSum / Math.max(wallN, 1);
+    const midAvg = midSum / Math.max(midN, 1);
+    check("pbf boundary: pool stays calm", s8.avgSpeed < 1.5 && s8.maxSpeed < 8,
+      `avg ${s8.avgSpeed.toFixed(2)}, max ${s8.maxSpeed.toFixed(1)} @8s`);
+    check("pbf boundary: walls no jumpier than interior", wallAvg < midAvg * 1.6 + 0.3,
+      `near-wall avg ${wallAvg.toFixed(2)} (${wallN}p) vs interior ${midAvg.toFixed(2)} (${midN}p)`);
+    check("pbf boundary: pool stays put", !s8.nan && s8.inBounds);
+  }
+
+  finish();
+}
+
+function clusterSpread(rb) {
+  const n = rb.px.length;
+  let cx = 0, cy = 0;
+  for (let i = 0; i < n; i++) { cx += rb.px[i]; cy += rb.py[i]; }
+  cx /= n; cy /= n;
+  let s = 0;
+  for (let i = 0; i < n; i++) s += Math.hypot(rb.px[i] - cx, rb.py[i] - cy);
+  return s / n;
+}
+
+function finish() {
+  log(failures === 0 ? "\nALL GPU CHECKS PASSED" : `\n${failures} GPU CHECK(S) FAILED`);
+  document.title = failures === 0 ? "GPU-PASS" : "GPU-FAIL";
+}
+
+main().catch((err) => { check("unhandled error", false, err.stack || err.message); finish(); });
+</script>
+</body>
+</html>

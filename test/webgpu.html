@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>WebGPU solver tests</title></head>
+<body style="font-family:monospace;background:#111;color:#ddd;padding:16px">
+<pre id="out">running…</pre>
+<script type="module">
+// WebGPU solver checks. Needs a browser with WebGPU; headless Chrome may
+// require --enable-unsafe-webgpu. Prints SKIPPED (not a failure) when no
+// adapter is available so CI environments without WebGPU don't break.
+import { WGPUSolver } from "../src/webgpu/wgpusolver.js";
+import { createParams } from "../src/config.js";
+import { spawners } from "../src/sim/spawn.js";
+
+const out = document.getElementById("out");
+const lines = [];
+let failures = 0;
+function log(s) { lines.push(s); out.textContent = lines.join("\n"); }
+function check(name, ok, detail = "") {
+  log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
+  if (!ok) failures++;
+}
+
+function makeState(n, world, h) {
+  return {
+    px: new Float32Array(n), py: new Float32Array(n),
+    vx: new Float32Array(n), vy: new Float32Array(n),
+    count: n, world, h,
+  };
+}
+
+function stats(rb, world) {
+  const n = rb.px.length;
+  let nan = false, inBounds = true, sumY = 0, sumSpeed = 0;
+  for (let i = 0; i < n; i++) {
+    if (!Number.isFinite(rb.px[i]) || !Number.isFinite(rb.py[i])) nan = true;
+    if (rb.px[i] < -1 || rb.px[i] > world.w + 1 ||
+        rb.py[i] < -1 || rb.py[i] > world.h + 1) inBounds = false;
+    sumY += rb.py[i];
+    sumSpeed += Math.hypot(rb.vx[i], rb.vy[i]);
+  }
+  return { nan, inBounds, avgY: sumY / n, avgSpeed: sumSpeed / n };
+}
+
+async function main() {
+  if (!navigator.gpu) {
+    log("SKIPPED — navigator.gpu undefined (WebGPU unsupported here)");
+    return finish(true);
+  }
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) {
+    log("SKIPPED — no WebGPU adapter available");
+    return finish(true);
+  }
+  const device = await adapter.requestDevice();
+  check("WebGPU device acquired", true);
+
+  // --- repulsion sign ---------------------------------------------------
+  {
+    const params = createParams();
+    params.count = 2;
+    params.gravity = 0;
+    params.vorticity = 0;
+    const world = { w: 50, h: 70 };
+    const gpu = new WGPUSolver(device, world, params);
+    const st = makeState(2, world, params.h);
+    st.px[0] = 25 - 0.4; st.py[0] = 35;
+    st.px[1] = 25 + 0.4; st.py[1] = 35;
+    gpu.seed(st);
+    for (let i = 0; i < 20; i++) gpu.step(params.dt);
+    const rb = await gpu.readback();
+    const gap = rb.px[1] - rb.px[0];
+    check("pressure repels", gap > 0.8, `gap 0.800 -> ${gap.toFixed(3)}`);
+  }
+
+  // --- dam break settles ------------------------------------------------
+  {
+    const params = createParams();
+    params.count = 3000;
+    const world = { w: 100, h: 70 };
+    const gpu = new WGPUSolver(device, world, params);
+    const st = makeState(3000, world, params.h);
+    spawners.damBreak(st);
+    gpu.seed(st);
+    const run = (sec) => { for (let i = 0, n = Math.round(sec / params.dt); i < n; i++) gpu.step(params.dt); };
+    run(3);
+    const mid = stats(await gpu.readback(), world);
+    run(3);
+    const end = stats(await gpu.readback(), world);
+    check("no NaN after 6s", !end.nan);
+    check("in bounds", end.inBounds);
+    check("settles near floor", end.avgY > world.h * 0.6, `avg y ${end.avgY.toFixed(1)} / ${world.h}`);
+    check("energy decays", end.avgSpeed < mid.avgSpeed,
+      `avg speed ${mid.avgSpeed.toFixed(2)} @3s -> ${end.avgSpeed.toFixed(2)} @6s`);
+  }
+
+  // --- boundary calmness: resting pool, walls vs interior ---------------
+  {
+    const params = createParams();
+    params.count = 2000;
+    const world = { w: 100, h: 70 };
+    const gpu = new WGPUSolver(device, world, params);
+    const st = makeState(2000, world, params.h);
+    const spacing = params.h * 0.55;
+    const cols = Math.floor((world.w - 4) / spacing);
+    for (let i = 0; i < 2000; i++) {
+      st.px[i] = 2 + (i % cols) * spacing;
+      st.py[i] = world.h - 2 - Math.floor(i / cols) * spacing;
+    }
+    gpu.seed(st);
+    for (let i = 0, n = Math.round(8 / params.dt); i < n; i++) gpu.step(params.dt);
+    const rb = await gpu.readback();
+    const s8 = stats(rb, world);
+    let wallSum = 0, wallN = 0, midSum = 0, midN = 0, maxSpeed = 0;
+    for (let i = 0; i < 2000; i++) {
+      const sp = Math.hypot(rb.vx[i], rb.vy[i]);
+      if (sp > maxSpeed) maxSpeed = sp;
+      const nearWall = rb.py[i] > world.h - 4 || rb.px[i] < 4 || rb.px[i] > world.w - 4;
+      const surface = rb.py[i] < world.h - 12;
+      if (nearWall) { wallSum += sp; wallN++; }
+      else if (!surface) { midSum += sp; midN++; }
+    }
+    const wallAvg = wallSum / Math.max(wallN, 1);
+    const midAvg = midSum / Math.max(midN, 1);
+    check("boundary: pool stays calm", s8.avgSpeed < 1.5 && maxSpeed < 8,
+      `avg ${s8.avgSpeed.toFixed(2)}, max ${maxSpeed.toFixed(1)} @8s`);
+    check("boundary: walls no jumpier than interior", wallAvg < midAvg * 1.6 + 0.3,
+      `near-wall avg ${wallAvg.toFixed(2)} vs interior ${midAvg.toFixed(2)}`);
+  }
+
+  // --- obstacle exclusion ----------------------------------------------
+  {
+    const params = createParams();
+    params.count = 2000;
+    const world = { w: 100, h: 70 };
+    const ob = { x: 50, y: 55, r: 10 };
+    params.obstacles.push(ob);
+    const gpu = new WGPUSolver(device, world, params);
+    const st = makeState(2000, world, params.h);
+    spawners.damBreak(st);
+    gpu.seed(st);
+    for (let i = 0, n = Math.round(4 / params.dt); i < n; i++) gpu.step(params.dt);
+    const rb = await gpu.readback();
+    let inside = 0;
+    for (let i = 0; i < 2000; i++) {
+      if (Math.hypot(rb.px[i] - ob.x, rb.py[i] - ob.y) < ob.r - 0.1) inside++;
+    }
+    check("obstacle keeps fluid out", inside === 0, `${inside} inside`);
+  }
+
+  // --- PBF: over-compressed cluster expands ------------------------------
+  {
+    const params = createParams();
+    params.physics = "pbf";
+    params.dt = 1 / 60;
+    params.count = 100;
+    params.gravity = 0;
+    const world = { w: 50, h: 70 };
+    const gpu = new WGPUSolver(device, world, params);
+    const st = makeState(100, world, params.h);
+    const tight = params.h * 0.275;
+    for (let i = 0; i < 100; i++) {
+      st.px[i] = 22 + (i % 10) * tight;
+      st.py[i] = 30 + Math.floor(i / 10) * tight;
+    }
+    gpu.seed(st);
+    const spread = (rb) => {
+      let cx = 0, cy = 0, s = 0;
+      const n = rb.px.length;
+      for (let i = 0; i < n; i++) { cx += rb.px[i]; cy += rb.py[i]; }
+      cx /= n; cy /= n;
+      for (let i = 0; i < n; i++) s += Math.hypot(rb.px[i] - cx, rb.py[i] - cy);
+      return s / n;
+    };
+    const spread0 = spread(await gpu.readback());
+    for (let i = 0, n = Math.round(1 / params.dt); i < n; i++) gpu.step(params.dt);
+    const rb = await gpu.readback();
+    const s = stats(rb, world);
+    check("pbf: over-compressed cluster expands", spread(rb) > spread0 * 1.2,
+      `spread ${spread0.toFixed(2)} -> ${spread(rb).toFixed(2)}`);
+    check("pbf: cluster stays finite", !s.nan && s.inBounds);
+  }
+
+  // --- PBF: dam break settles --------------------------------------------
+  {
+    const params = createParams();
+    params.physics = "pbf";
+    params.dt = 1 / 60;
+    params.count = 3000;
+    const world = { w: 100, h: 70 };
+    const gpu = new WGPUSolver(device, world, params);
+    const st = makeState(3000, world, params.h);
+    spawners.damBreak(st);
+    gpu.seed(st);
+    const run = (sec) => { for (let i = 0, n = Math.round(sec / params.dt); i < n; i++) gpu.step(params.dt); };
+    run(4);
+    const mid = stats(await gpu.readback(), world);
+    run(4);
+    const end = stats(await gpu.readback(), world);
+    check("pbf: no NaN after 8s", !end.nan);
+    check("pbf: in bounds", end.inBounds);
+    check("pbf: settled near floor", end.avgY > world.h * 0.6, `avg y ${end.avgY.toFixed(1)} / ${world.h}`);
+    check("pbf: energy decays", end.avgSpeed < Math.max(mid.avgSpeed, 3),
+      `avg speed ${mid.avgSpeed.toFixed(2)} @4s -> ${end.avgSpeed.toFixed(2)} @8s`);
+  }
+
+  // --- PBF boundary calmness: same resting pool as the force-mode test ---
+  {
+    const params = createParams();
+    params.physics = "pbf";
+    params.dt = 1 / 60;
+    params.count = 2000;
+    const world = { w: 100, h: 70 };
+    const gpu = new WGPUSolver(device, world, params);
+    const st = makeState(2000, world, params.h);
+    const spacing = params.h * 0.55;
+    const cols = Math.floor((world.w - 4) / spacing);
+    for (let i = 0; i < 2000; i++) {
+      st.px[i] = 2 + (i % cols) * spacing;
+      st.py[i] = world.h - 2 - Math.floor(i / cols) * spacing;
+    }
+    gpu.seed(st);
+    for (let i = 0, n = Math.round(8 / params.dt); i < n; i++) gpu.step(params.dt);
+    const rb = await gpu.readback();
+    const s8 = stats(rb, world);
+    let wallSum = 0, wallN = 0, midSum = 0, midN = 0, maxSpeed = 0;
+    for (let i = 0; i < 2000; i++) {
+      const sp = Math.hypot(rb.vx[i], rb.vy[i]);
+      if (sp > maxSpeed) maxSpeed = sp;
+      const nearWall = rb.py[i] > world.h - 4 || rb.px[i] < 4 || rb.px[i] > world.w - 4;
+      const surface = rb.py[i] < world.h - 12;
+      if (nearWall) { wallSum += sp; wallN++; }
+      else if (!surface) { midSum += sp; midN++; }
+    }
+    const wallAvg = wallSum / Math.max(wallN, 1);
+    const midAvg = midSum / Math.max(midN, 1);
+    check("pbf boundary: pool stays calm", s8.avgSpeed < 1.5 && maxSpeed < 8,
+      `avg ${s8.avgSpeed.toFixed(2)}, max ${maxSpeed.toFixed(1)} @8s`);
+    check("pbf boundary: walls no jumpier than interior", wallAvg < midAvg * 1.6 + 0.3,
+      `near-wall avg ${wallAvg.toFixed(2)} vs interior ${midAvg.toFixed(2)}`);
+  }
+
+  // --- large count smoke (262k, exact grid) -----------------------------
+  {
+    const params = createParams();
+    params.count = 262144;
+    const scale = Math.sqrt(262144 / 3000);
+    const world = { w: 100 * scale, h: 70 * scale };
+    const gpu = new WGPUSolver(device, world, params);
+    const st = makeState(262144, world, params.h);
+    spawners.damBreak(st);
+    gpu.seed(st);
+    for (let i = 0; i < 120; i++) gpu.step(params.dt);
+    const s = stats(await gpu.readback(), world);
+    check("262k particles: finite and in bounds", !s.nan && s.inBounds);
+  }
+
+  finish(false);
+}
+
+function finish(skipped) {
+  if (skipped) {
+    document.title = "GPU-SKIP";
+  } else {
+    log(failures === 0 ? "\nALL WEBGPU CHECKS PASSED" : `\n${failures} WEBGPU CHECK(S) FAILED`);
+    document.title = failures === 0 ? "GPU-PASS" : "GPU-FAIL";
+  }
+}
+
+main().catch((err) => { check("unhandled error", false, err.stack || err.message); finish(false); });
+</script>
+</body>
+</html>

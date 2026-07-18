@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>GPU SPH Fluid</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+        background: #05070d;
+      }
+      body {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      #glcanvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        touch-action: none;
+        cursor: crosshair;
+      }
+
+      #ui {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 10;
+        background: rgba(10, 16, 28, 0.72);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(120, 160, 220, 0.18);
+        border-radius: 10px;
+        padding: 12px 14px;
+        color: #cdd9ef;
+        font-size: 12px;
+        width: 248px;
+        user-select: none;
+      }
+      #ui h1 {
+        font-size: 13px;
+        letter-spacing: 0.5px;
+        color: #8fb4ff;
+        margin-bottom: 2px;
+        font-weight: 600;
+      }
+      #ui .sub {
+        font-size: 10px;
+        color: #6a7a99;
+        margin-bottom: 10px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 7px 0;
+      }
+      .row label {
+        flex: 0 0 78px;
+        color: #9fb0cc;
+        font-size: 11px;
+      }
+      .row input[type="range"] {
+        flex: 1;
+        accent-color: #5b8dff;
+        height: 3px;
+        min-width: 0;
+      }
+      .row .val {
+        flex: 0 0 38px;
+        text-align: right;
+        color: #7fa0d8;
+        font-size: 11px;
+      }
+      .row.inert {
+        opacity: 0.35;
+      }
+      .row.inert input[type="range"] {
+        cursor: not-allowed;
+      }
+      .row select {
+        flex: 1;
+        background: rgba(70, 110, 200, 0.18);
+        color: #b9c9ea;
+        border: 1px solid rgba(120, 160, 220, 0.25);
+        border-radius: 6px;
+        padding: 4px 6px;
+        font: inherit;
+        font-size: 11px;
+      }
+      .btns {
+        display: flex;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .btns button,
+      .seg button {
+        flex: 1;
+        background: rgba(70, 110, 200, 0.18);
+        color: #b9c9ea;
+        border: 1px solid rgba(120, 160, 220, 0.25);
+        border-radius: 6px;
+        padding: 6px 4px;
+        font: inherit;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .btns button:hover,
+      .seg button:hover {
+        background: rgba(90, 140, 240, 0.32);
+        color: #eaf1ff;
+      }
+      .btns button.active,
+      .seg button.active {
+        background: rgba(90, 140, 240, 0.4);
+        border-color: #6f9dff;
+        color: #fff;
+      }
+      .seg button:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+      .seg {
+        display: flex;
+        gap: 6px;
+        flex: 1;
+      }
+
+      #hud {
+        position: fixed;
+        bottom: 10px;
+        left: 12px;
+        z-index: 10;
+        color: #55688a;
+        font-size: 11px;
+        pointer-events: none;
+      }
+      #hint {
+        position: fixed;
+        bottom: 10px;
+        right: 12px;
+        z-index: 10;
+        color: #45587a;
+        font-size: 11px;
+        pointer-events: none;
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="glcanvas"></canvas>
+
+    <div id="ui">
+      <h1>SPH FLUID</h1>
+      <div class="sub">smoothed particle hydrodynamics · gpu</div>
+      <div class="row">
+        <label>Scene</label>
+        <select id="preset">
+          <option value="damBreak">Dam break</option>
+          <option value="doubleDam">Double dam</option>
+          <option value="drop">Drop into pool</option>
+          <option value="sphere">Sphere</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Backend</label>
+        <div class="seg">
+          <button id="backend-webgl">WebGL2</button>
+          <button id="backend-webgpu">WebGPU</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>Physics</label>
+        <div class="seg">
+          <button id="phys-force">Force</button>
+          <button id="phys-pbf">PBF</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>Display</label>
+        <div class="seg">
+          <button id="mode-liquid">Liquid</button>
+          <button id="mode-dots">Dots</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>Particles</label><input id="count" type="range" /><span
+          class="val"
+          id="count-val"
+        ></span>
+      </div>
+      <div class="row">
+        <label>Gravity</label
+        ><input id="gravity" type="range" min="0" max="40" step="0.5" /><span
+          class="val"
+          id="gravity-val"
+        ></span>
+      </div>
+      <div class="row">
+        <label>G direction</label>
+        <div class="seg">
+          <button id="grav-down">Down</button>
+          <button id="grav-center">Center</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>Viscosity</label
+        ><input id="viscosity" type="range" min="0" max="8" step="0.1" /><span
+          class="val"
+          id="viscosity-val"
+        ></span>
+      </div>
+      <div class="row">
+        <label>Stiffness</label
+        ><input
+          id="stiffness"
+          type="range"
+          min="100"
+          max="1200"
+          step="20"
+        /><span class="val" id="stiffness-val"></span>
+      </div>
+      <div class="row">
+        <label>Near press</label
+        ><input id="nearstiff" type="range" min="0" max="150" step="5" /><span
+          class="val"
+          id="nearstiff-val"
+        ></span>
+      </div>
+      <div class="row">
+        <label>Vorticity</label
+        ><input id="vorticity" type="range" min="0" max="6" step="0.5" /><span
+          class="val"
+          id="vorticity-val"
+        ></span>
+      </div>
+      <div class="row">
+        <label>Pointer</label
+        ><input id="pointer" type="range" min="0" max="500" step="10" /><span
+          class="val"
+          id="pointer-val"
+        ></span>
+      </div>
+      <div class="row">
+        <label>Obstacles</label>
+        <div class="seg">
+          <button id="obstacle-draw">Draw</button>
+          <button id="obstacle-erase">Erase</button>
+          <button id="obstacle-clear">Clear</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>Wall size</label
+        ><input id="obstsize" type="range" min="1" max="10" step="0.5" /><span
+          class="val"
+          id="obstsize-val"
+        ></span>
+      </div>
+      <div class="btns">
+        <button id="pause">Pause</button>
+        <button id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div id="hud">–</div>
+    <div id="hint">
+      drag to push · right-drag to pull<br />o = draw walls · e = erase walls ·
+      space = pause · r = reset
+    </div>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

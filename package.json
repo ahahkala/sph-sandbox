@@ -1,0 +1,13 @@
+{
+  "name": "sph-sim",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node tools/serve.mjs",
+    "test": "node tools/test-headless.mjs test/gpu.html",
+    "shot": "node tools/shot.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.3.0"
+  }
+}

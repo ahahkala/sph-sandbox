@@ -1,0 +1,10 @@
+# Secrets
+.env
+.env.*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+
+node_modules
+shots
