@@ -49,6 +49,13 @@
         width: 248px;
         user-select: none;
       }
+      #ui-header {
+        cursor: pointer;
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+      }
       #ui h1 {
         font-size: 13px;
         letter-spacing: 0.5px;
@@ -60,6 +67,19 @@
         font-size: 10px;
         color: #6a7a99;
         margin-bottom: 10px;
+      }
+      #ui-caret {
+        color: #6a7a99;
+        font-size: 10px;
+        transition: transform 0.2s ease;
+        flex: 0 0 auto;
+      }
+      #ui.collapsed #ui-caret {
+        transform: rotate(-90deg);
+      }
+      #ui.collapsed .sub,
+      #ui.collapsed #ui-content {
+        display: none;
       }
       .row {
         display: flex;
@@ -164,121 +184,145 @@
     <canvas id="glcanvas"></canvas>
 
     <div id="ui">
-      <h1>SPH FLUID</h1>
-      <div class="sub">smoothed particle hydrodynamics · gpu</div>
-      <div class="row">
-        <label>Scene</label>
-        <select id="preset">
-          <option value="damBreak">Dam break</option>
-          <option value="doubleDam">Double dam</option>
-          <option value="drop">Drop into pool</option>
-          <option value="sphere">Sphere</option>
-        </select>
-      </div>
-      <div class="row">
-        <label>Backend</label>
-        <div class="seg">
-          <button id="backend-webgl">WebGL2</button>
-          <button id="backend-webgpu">WebGPU</button>
+      <div id="ui-header">
+        <div>
+          <h1>SPH FLUID</h1>
+          <div class="sub">smoothed particle hydrodynamics · gpu</div>
         </div>
+        <span id="ui-caret">▼</span>
       </div>
-      <div class="row">
-        <label>Physics</label>
-        <div class="seg">
-          <button id="phys-force">Force</button>
-          <button id="phys-pbf">PBF</button>
+      <div id="ui-content">
+        <div class="row">
+          <label>Scene</label>
+          <select id="preset">
+            <option value="damBreak">Dam break</option>
+            <option value="doubleDam">Double dam</option>
+            <option value="drop">Drop into pool</option>
+            <option value="sphere">Sphere</option>
+          </select>
         </div>
-      </div>
-      <div class="row">
-        <label>Display</label>
-        <div class="seg">
-          <button id="mode-liquid">Liquid</button>
-          <button id="mode-dots">Dots</button>
+        <div class="row">
+          <label>Backend</label>
+          <div class="seg">
+            <button id="backend-webgl">WebGL2</button>
+            <button id="backend-webgpu">WebGPU</button>
+          </div>
         </div>
-      </div>
-      <div class="row">
-        <label>Particles</label><input id="count" type="range" /><span
-          class="val"
-          id="count-val"
-        ></span>
-      </div>
-      <div class="row">
-        <label>Gravity</label
-        ><input id="gravity" type="range" min="0" max="40" step="0.5" /><span
-          class="val"
-          id="gravity-val"
-        ></span>
-      </div>
-      <div class="row">
-        <label>G direction</label>
-        <div class="seg">
-          <button id="grav-down">Down</button>
-          <button id="grav-center">Center</button>
+        <div class="row">
+          <label>Physics</label>
+          <div class="seg">
+            <button id="phys-force">Force</button>
+            <button id="phys-pbf">PBF</button>
+          </div>
         </div>
-      </div>
-      <div class="row">
-        <label>Viscosity</label
-        ><input id="viscosity" type="range" min="0" max="8" step="0.1" /><span
-          class="val"
-          id="viscosity-val"
-        ></span>
-      </div>
-      <div class="row">
-        <label>Stiffness</label
-        ><input
-          id="stiffness"
-          type="range"
-          min="100"
-          max="1200"
-          step="20"
-        /><span class="val" id="stiffness-val"></span>
-      </div>
-      <div class="row">
-        <label>Near press</label
-        ><input id="nearstiff" type="range" min="0" max="150" step="5" /><span
-          class="val"
-          id="nearstiff-val"
-        ></span>
-      </div>
-      <div class="row">
-        <label>Vorticity</label
-        ><input id="vorticity" type="range" min="0" max="6" step="0.5" /><span
-          class="val"
-          id="vorticity-val"
-        ></span>
-      </div>
-      <div class="row">
-        <label>Pointer</label
-        ><input id="pointer" type="range" min="0" max="500" step="10" /><span
-          class="val"
-          id="pointer-val"
-        ></span>
-      </div>
-      <div class="row">
-        <label>Obstacles</label>
-        <div class="seg">
-          <button id="obstacle-draw">Draw</button>
-          <button id="obstacle-erase">Erase</button>
-          <button id="obstacle-clear">Clear</button>
+        <div class="row">
+          <label>Display</label>
+          <div class="seg">
+            <button id="mode-liquid">Liquid</button>
+            <button id="mode-dots">Dots</button>
+          </div>
         </div>
-      </div>
-      <div class="row">
-        <label>Wall size</label
-        ><input id="obstsize" type="range" min="1" max="10" step="0.5" /><span
-          class="val"
-          id="obstsize-val"
-        ></span>
-      </div>
-      <div class="btns">
-        <button id="pause">Pause</button>
-        <button id="reset">Reset</button>
+        <div class="row">
+          <label>Particles</label><input id="count" type="range" /><span
+            class="val"
+            id="count-val"
+          ></span>
+        </div>
+        <div class="row">
+          <label>Gravity</label
+          ><input id="gravity" type="range" min="0" max="40" step="0.5" /><span
+            class="val"
+            id="gravity-val"
+          ></span>
+        </div>
+        <div class="row">
+          <label>G direction</label>
+          <div class="seg">
+            <button id="grav-down">Down</button>
+            <button id="grav-center">Center</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>Viscosity</label
+          ><input
+            id="viscosity"
+            type="range"
+            min="0"
+            max="100"
+            step="0.1"
+          /><span class="val" id="viscosity-val"></span>
+        </div>
+        <div class="row">
+          <label>Stiffness</label
+          ><input
+            id="stiffness"
+            type="range"
+            min="100"
+            max="2000"
+            step="20"
+          /><span class="val" id="stiffness-val"></span>
+        </div>
+        <div class="row">
+          <label>Near press</label
+          ><input
+            id="nearstiff"
+            type="range"
+            min="-10"
+            max="10"
+            step="1"
+          /><span class="val" id="nearstiff-val"></span>
+        </div>
+        <div class="row">
+          <label>Vorticity</label
+          ><input
+            id="vorticity"
+            type="range"
+            min="0"
+            max="20"
+            step="0.5"
+          /><span class="val" id="vorticity-val"></span>
+        </div>
+        <div class="row">
+          <label>Pointer</label
+          ><input id="pointer" type="range" min="0" max="500" step="10" /><span
+            class="val"
+            id="pointer-val"
+          ></span>
+        </div>
+        <div class="row">
+          <label>Obstacles</label>
+          <div class="seg">
+            <button id="obstacle-draw">Draw</button>
+            <button id="obstacle-erase">Erase</button>
+            <button id="obstacle-clear">Clear</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>Wall size</label
+          ><input id="obstsize" type="range" min="1" max="10" step="0.5" /><span
+            class="val"
+            id="obstsize-val"
+          ></span>
+        </div>
+        <div class="row">
+          <label>Duck</label>
+          <div class="seg">
+            <button id="duck-on">On</button>
+            <button id="duck-off">Off</button>
+          </div>
+        </div>
+        <div class="btns">
+          <button id="pause">Pause</button>
+          <button id="reset">Reset</button>
+        </div>
       </div>
     </div>
 
     <div id="hud">–</div>
     <div id="hint">
-      drag to push · right-drag to pull<br />o = draw walls · e = erase walls ·
-      space = pause · r = reset
+      drag to push · right-drag to pull · grab the duck to throw it<br />arrows
+      = steer duck · o = draw walls · e = erase walls · space = pause · r =
+      reset
     </div>
 
     <script type="module" src="src/main.js"></script>

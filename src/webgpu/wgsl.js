@@ -332,6 +332,49 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+// Duck reaction-force reduction (see WebGL2 duckForceVS): every particle
+// recomputes its boundary spring against the duck hull circles; the negated
+// force + torque about the duck center are summed with fixed-point atomics
+// (D.fix units per force unit). P.wallC is written pre-halved in PBF mode.
+export const duckForceWGSL = /* wgsl */ `
+${PARAMS_STRUCT}
+struct DuckParams {
+  center: vec2f,
+  count: f32,
+  fix: f32,                  // fixed-point scale
+  circles: array<vec4f, 8>,  // xy = center, z = radius
+}
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<storage, read> posVel: array<vec4f>;
+@group(0) @binding(2) var<uniform> D: DuckParams;
+@group(0) @binding(3) var<storage, read_write> outF: array<atomic<i32>, 3>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= u32(P.count)) { return; }
+  let pv = posVel[i];
+  var F = vec2f(0.0);
+  var hit = false;
+  for (var k = 0; k < i32(D.count); k = k + 1) {
+    let d = pv.xy - D.circles[k].xy;
+    let dist = length(d);
+    let pen = D.circles[k].z + P.h - dist;
+    if (pen > 0.0 && dist > 1e-4) {
+      let nrm = d / dist;
+      let vn = dot(pv.zw, nrm);
+      let mag = max(P.wallK * pen - P.wallC * min(vn, 0.0), 0.0);
+      F = F - mag * P.mass * nrm;   // reaction on the duck
+      hit = true;
+    }
+  }
+  if (!hit) { return; }
+  let r = pv.xy - D.center;
+  atomicAdd(&outF[0], i32(F.x * D.fix));
+  atomicAdd(&outF[1], i32(F.y * D.fix));
+  atomicAdd(&outF[2], i32((r.x * F.y - r.y * F.x) * D.fix));
+}
+`;
+
 // ---------------------------------------------------------------------------
 // PBF (position-based fluids) — same math as the WebGL2 pbfshaders.js:
 // predict -> [lambda -> deltaP] iterations -> finalize. Storage buffers
@@ -589,6 +632,35 @@ fn fs(in: VSOut) -> @location(0) vec4f {
   oc = oc + (1.0 - smoothstep(0.0, px * 6.0, abs(d))) * vec3f(0.16, 0.24, 0.38);
   return vec4f(oc, fill * 0.96);
 }
+`;
+
+// Duck mesh: rotate + translate the local-space triangle list (interleaved
+// x, y, r, g, b vertex buffer shared with the WebGL2 renderer).
+export const duckWGSL = /* wgsl */ `
+struct DuckDraw {
+  pose: vec4f,   // x, y, cos(angle), sin(angle)
+  world: vec2f,
+  scale: f32,
+  pad0: f32,
+}
+@group(0) @binding(0) var<uniform> D: DuckDraw;
+struct VSOut {
+  @builtin(position) pos: vec4f,
+  @location(0) col: vec3f,
+}
+@vertex
+fn vs(@location(0) aPos: vec2f, @location(1) aCol: vec3f) -> VSOut {
+  let p = D.pose.xy + vec2f(aPos.x * D.pose.z - aPos.y * D.pose.w,
+                            aPos.x * D.pose.w + aPos.y * D.pose.z) * D.scale;
+  var clip = (p / D.world) * 2.0 - 1.0;
+  clip.y = -clip.y;
+  var out: VSOut;
+  out.pos = vec4f(clip, 0.0, 1.0);
+  out.col = aCol;
+  return out;
+}
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4f { return vec4f(in.col, 1.0); }
 `;
 
 export const compositeWGSL = /* wgsl */ `

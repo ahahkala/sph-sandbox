@@ -7,7 +7,7 @@
 
 import {
   countWGSL, scanBlockWGSL, scanSerialWGSL, scanAddWGSL,
-  scatterWGSL, densityWGSL, forceWGSL,
+  scatterWGSL, densityWGSL, forceWGSL, duckForceWGSL,
   predictWGSL, pbfLambdaWGSL, pbfDeltaPWGSL, pbfFinalizeWGSL,
 } from "./wgsl.js";
 import { WORLD_HEIGHT as REF_WORLD_H } from "../config.js";
@@ -61,6 +61,26 @@ export class WGPUSolver {
     this.pPbfLambda = mkPipeline(pbfLambdaWGSL, "pbfLambda");
     this.pPbfDeltaP = mkPipeline(pbfDeltaPWGSL, "pbfDeltaP");
     this.pPbfFinalize = mkPipeline(pbfFinalizeWGSL, "pbfFinalize");
+    this.pDuckForce = mkPipeline(duckForceWGSL, "duckForce");
+
+    // duck reaction-force reduction: fixed-point atomic sums, read back
+    // asynchronously (sampleDuckForce returns the latest resolved value)
+    this.duckData = new Float32Array(36); // struct DuckParams (144 bytes)
+    this.duckU = device.createBuffer({
+      size: this.duckData.byteLength,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.duckOut = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    this.duckStaging = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    this.duckBinds = null;
+    this.duckPending = false;
+    this.duckForce = { fx: 0, fy: 0, torque: 0 };
 
     this.count = 0;
     this.cur = 0;
@@ -97,6 +117,7 @@ export class WGPUSolver {
     this.lambdaBuf = mk(n * 8);    // PBF (lambda, rho)
     this.gridDirty = true;
     this.bindGroups = null;
+    this.duckBinds = null;
   }
 
   resizeGrid() {
@@ -161,8 +182,11 @@ export class WGPUSolver {
     d[5] = this.world.h;
     d[6] = this.gridCols;
     d[7] = this.gridRows;
+    const ob = p.duckCircles.length
+      ? p.obstacles.concat(p.duckCircles)
+      : p.obstacles;
     d[8] = this.count;
-    d[9] = p.obstacles.length;
+    d[9] = ob.length; // drawn obstacles + duck hull circles
     d[10] = this.h;        // cellSize
     d[11] = this.h;
     d[12] = this.h * this.h;
@@ -193,7 +217,6 @@ export class WGPUSolver {
     d[34] = p.gravityCenter ? 1 : 0;
     this.device.queue.writeBuffer(this.paramsBuf, 0, d);
 
-    const ob = p.obstacles;
     if (ob.length > this.obstacleCap) {
       while (this.obstacleCap < ob.length) this.obstacleCap *= 2;
       this.obstacleData = new Float32Array(this.obstacleCap * 4);
@@ -307,6 +330,64 @@ export class WGPUSolver {
     pass.end();
     this.device.queue.submit([enc.finish()]);
     this.cur = 1 - this.cur;
+  }
+
+  // Sum the fluid's reaction to the duck hull's boundary springs. The
+  // readback is async: returns the most recently resolved value (a frame or
+  // two stale), never stalls the pipeline. Uses P from the last substep.
+  sampleDuckForce(circles, cx, cy) {
+    const dev = this.device;
+    const FIX = 32; // fixed-point units per force unit
+    const d = this.duckData;
+    d.fill(0);
+    d[0] = cx;
+    d[1] = cy;
+    d[2] = Math.min(circles.length, 8);
+    d[3] = FIX;
+    for (let k = 0; k < d[2]; k++) {
+      d[4 + k * 4] = circles[k].x;
+      d[5 + k * 4] = circles[k].y;
+      d[6 + k * 4] = circles[k].r;
+    }
+    dev.queue.writeBuffer(this.duckU, 0, d);
+    if (!this.duckBinds) {
+      this.duckBinds = [0, 1].map((cur) => dev.createBindGroup({
+        layout: this.pDuckForce.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.paramsBuf } },
+          { binding: 1, resource: { buffer: this.posVel[cur] } },
+          { binding: 2, resource: { buffer: this.duckU } },
+          { binding: 3, resource: { buffer: this.duckOut } },
+        ],
+      }));
+    }
+    const enc = dev.createCommandEncoder();
+    enc.clearBuffer(this.duckOut);
+    const pass = enc.beginComputePass();
+    pass.setPipeline(this.pDuckForce);
+    pass.setBindGroup(0, this.duckBinds[this.cur]);
+    pass.dispatchWorkgroups(Math.ceil(this.count / WG));
+    pass.end();
+    const read = !this.duckPending;
+    if (read) enc.copyBufferToBuffer(this.duckOut, 0, this.duckStaging, 0, 16);
+    dev.queue.submit([enc.finish()]);
+    if (read) {
+      this.duckPending = true;
+      // exposed so the ?t= fast-forward loop can await the fresh value
+      this.duckReadPromise = this.duckStaging.mapAsync(GPUMapMode.READ).then(() => {
+        const a = new Int32Array(this.duckStaging.getMappedRange().slice(0));
+        // PBF applies the boundary nudge once per constraint iteration —
+        // mirror that in the reaction (see the WebGL2 sampleDuckForce)
+        const p = this.params;
+        const iters = p.physics === "pbf"
+          ? Math.max(1, Math.round(p.pbfIterations) | 1) : 1;
+        const s = iters / FIX;
+        this.duckForce = { fx: a[0] * s, fy: a[1] * s, torque: a[2] * s };
+        this.duckStaging.unmap();
+        this.duckPending = false;
+      }).catch(() => { this.duckPending = false; });
+    }
+    return this.duckForce;
   }
 
   // Async readback for tests/debugging.

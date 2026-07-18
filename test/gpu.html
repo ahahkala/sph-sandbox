@@ -283,6 +283,34 @@ async function main() {
     check("pbf boundary: pool stays put", !s8.nan && s8.inBounds);
   }
 
+  // --- duck coupling: submerged hull circle feels a net upward reaction --
+  {
+    const params = createParams();
+    params.count = 2000;
+    const world = { w: 100, h: 70 };
+    const gpu = new GPUSolver(makeGL(), world, params);
+    const st = makeState(2000, world, params.h);
+    const spacing = params.h * 0.55;
+    const cols = Math.floor((world.w - 4) / spacing);
+    for (let i = 0; i < 2000; i++) {
+      st.px[i] = 2 + (i % cols) * spacing;
+      st.py[i] = world.h - 2 - Math.floor(i / cols) * spacing;
+    }
+    gpu.seed(st);
+    run(1, gpu, params);
+    // pool surface sits near y = 52; park a hull circle half in the water
+    const hull = { x: 50, y: 52, r: 5 };
+    params.duckCircles.push(hull);
+    run(1, gpu, params); // fluid gets pushed out of the hull
+    const f = gpu.sampleDuckForce(params.duckCircles, hull.x, hull.y);
+    check("duck: force finite",
+      Number.isFinite(f.fx) && Number.isFinite(f.fy) && Number.isFinite(f.torque));
+    check("duck: submerged hull pushed up (buoyancy)", f.fy < 0,
+      `fy ${f.fy.toFixed(1)} (up is negative)`);
+    const s = stats(gpu.readback(), world);
+    check("duck: fluid stays sane around hull", !s.nan && s.inBounds);
+  }
+
   finish();
 }
 

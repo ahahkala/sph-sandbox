@@ -1,11 +1,12 @@
 // Pointer interaction. Normal mode: left-drag pushes fluid, right-drag
-// pulls it. Obstacle-draw mode (toggle "O"): left-drag stamps circular
+// pulls it; a drag starting on the duck grabs it instead (release to
+// throw). Obstacle-draw mode (toggle "O"): left-drag stamps circular
 // walls, right-drag erases them. Eraser mode (toggle "E"): any drag
 // erases obstacles near the cursor.
 
 import { WORLD_HEIGHT } from "../config.js";
 
-export function setupPointer(canvas, solver, params) {
+export function setupPointer(canvas, solver, params, duck) {
   const toWorld = (e) => {
     const rect = canvas.getBoundingClientRect();
     return {
@@ -15,6 +16,7 @@ export function setupPointer(canvas, solver, params) {
   };
 
   let drawing = 0; // 0 = off, 1 = stamping, -1 = erasing
+  let draggingDuck = false;
 
   const stamp = (w) => {
     const r = params.obstacleRadius * (solver.world.h / WORLD_HEIGHT);
@@ -38,6 +40,8 @@ export function setupPointer(canvas, solver, params) {
     if (params.drawObstacles || params.eraseObstacles) {
       drawing = (params.eraseObstacles || e.button === 2) ? -1 : 1;
       stamp(w);
+    } else if (duck && duck.startDrag(w.x, w.y)) {
+      draggingDuck = true; // grab the duck instead of pushing fluid
     } else {
       solver.pointer.x = w.x;
       solver.pointer.y = w.y;
@@ -50,6 +54,8 @@ export function setupPointer(canvas, solver, params) {
     const w = toWorld(e);
     if (drawing !== 0) {
       stamp(w);
+    } else if (draggingDuck) {
+      duck.dragTo(w.x, w.y);
     } else if (solver.pointer.active) {
       solver.pointer.x = w.x;
       solver.pointer.y = w.y;
@@ -58,6 +64,10 @@ export function setupPointer(canvas, solver, params) {
   const release = () => {
     solver.pointer.active = false;
     drawing = 0;
+    if (draggingDuck) {
+      duck.endDrag(); // the duck keeps its velocity: release mid-swing to throw
+      draggingDuck = false;
+    }
   };
   canvas.addEventListener("pointerup", release);
   canvas.addEventListener("pointercancel", release);

@@ -3,7 +3,8 @@
 // that a composite pass shades into a liquid surface. The composite pass
 // also draws the obstacle overlay.
 
-import { particleQuadWGSL, compositeWGSL, obstacleOverlayWGSL } from "./wgsl.js";
+import { particleQuadWGSL, compositeWGSL, obstacleOverlayWGSL, duckWGSL } from "./wgsl.js";
+import { DUCK_MESH, DUCK_STRIDE } from "../sim/duck.js";
 
 const FIELD_SCALE = 0.5;
 const FIELD_AMP = 0.9;
@@ -75,6 +76,38 @@ export class WGPURenderer {
       primitive: { topology: "triangle-list" },
     });
     this.obstacleBind = null;
+
+    // duck mesh: static vertex buffer, transform in a small uniform
+    const duckModule = device.createShaderModule({ code: duckWGSL });
+    this.pDuck = device.createRenderPipeline({
+      layout: "auto",
+      vertex: {
+        module: duckModule, entryPoint: "vs",
+        buffers: [{
+          arrayStride: DUCK_STRIDE * 4,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x2" },
+            { shaderLocation: 1, offset: 8, format: "float32x3" },
+          ],
+        }],
+      },
+      fragment: { module: duckModule, entryPoint: "fs", targets: [{ format: this.format }] },
+      primitive: { topology: "triangle-list" },
+    });
+    this.duckVB = device.createBuffer({
+      size: DUCK_MESH.byteLength,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(this.duckVB, 0, DUCK_MESH);
+    this.duckData = new Float32Array(8); // struct DuckDraw (32 bytes)
+    this.uDuck = this.device.createBuffer({
+      size: this.duckData.byteLength,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.duckBind = device.createBindGroup({
+      layout: this.pDuck.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: this.uDuck } }],
+    });
 
     this.fieldTex = null;
     this.bindCache = new WeakMap(); // per posVel buffer bind groups
@@ -153,6 +186,26 @@ export class WGPURenderer {
     }
     dev.queue.writeBuffer(this.obstacleBuf, 0, this.obstacleData);
 
+    const pose = p.duckPose;
+    if (pose) {
+      const dd = this.duckData;
+      dd[0] = pose.x;
+      dd[1] = pose.y;
+      dd[2] = Math.cos(pose.angle);
+      dd[3] = Math.sin(pose.angle);
+      dd[4] = world.w;
+      dd[5] = world.h;
+      dd[6] = pose.scale;
+      dev.queue.writeBuffer(this.uDuck, 0, dd);
+    }
+    const drawDuck = (pass) => {
+      if (!pose) return;
+      pass.setPipeline(this.pDuck);
+      pass.setBindGroup(0, this.duckBind);
+      pass.setVertexBuffer(0, this.duckVB);
+      pass.draw(DUCK_MESH.length / DUCK_STRIDE);
+    };
+
     const enc = dev.createCommandEncoder();
     const canvasView = this.ctx.getCurrentTexture().createView();
 
@@ -189,6 +242,7 @@ export class WGPURenderer {
       pass.setPipeline(this.pComposite);
       pass.setBindGroup(0, this.compositeBind);
       pass.draw(3);
+      drawDuck(pass);
       pass.end();
     } else {
       const half = Math.max(1, p.h * (this.canvas.height / world.h) * 0.65);
@@ -216,6 +270,7 @@ export class WGPURenderer {
         pass.setBindGroup(0, this.obstacleBind);
         pass.draw(3);
       }
+      drawDuck(pass);
       pass.end();
     }
     dev.queue.submit([enc.finish()]);

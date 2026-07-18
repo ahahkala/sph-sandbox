@@ -38,3 +38,11 @@ no runtime deps. See README.md for architecture and the feature matrix.
   halved — full wallDamping in position space measurably re-adds jitter.
 - `restDensity` must match the spawn lattice density (~1.7 at spacing
   0.55·h); keep slider ranges in index.html in sync with src/config.js.
+- Rubber duck (src/sim/duck.js): CPU rigid body coupled two-way — solvers
+  append `params.duckCircles` to the obstacle upload (never push duck
+  circles into `params.obstacles`: renderers and the eraser read that), and
+  `solver.sampleDuckForce()` reduces the spring reaction over all particles
+  on the GPU (sync 1×1 readback on WebGL2, async fixed-point atomics on
+  WebGPU — a frame stale; the ?t= fast-forward awaits `duckReadPromise`).
+  Interaction: drag grabs/throws it (spring in duck.step), arrow keys set
+  `params.duckThrust`; wiring is tested by `node tools/test-duck-input.mjs`.

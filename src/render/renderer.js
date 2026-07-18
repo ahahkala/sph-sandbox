@@ -10,8 +10,10 @@
 import { createProgram, getUniforms, createTarget, deleteTarget, ObstacleTexture } from "./glutils.js";
 import {
   particleVS, dotsFS, fieldFS, compositeVS, compositeFS, obstacleFS,
+  duckVS, duckFS,
 } from "./shaders.js";
 import { TEX_WIDTH } from "../config.js";
+import { DUCK_MESH, DUCK_STRIDE } from "../sim/duck.js";
 
 const FIELD_SCALE = 0.5;  // field texture resolution relative to canvas
 
@@ -36,6 +38,20 @@ export class Renderer {
     this.progObstacle = createProgram(gl, compositeVS, obstacleFS);
     this.uObstacle = getUniforms(gl, this.progObstacle);
     this.obstacleTex = new ObstacleTexture(gl);
+    this.progDuck = createProgram(gl, duckVS, duckFS);
+    this.uDuck = getUniforms(gl, this.progDuck);
+
+    // duck mesh VAO (static local-space triangles; transform is a uniform)
+    this.duckVAO = gl.createVertexArray();
+    gl.bindVertexArray(this.duckVAO);
+    this.duckVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.duckVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, DUCK_MESH, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, DUCK_STRIDE * 4, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, DUCK_STRIDE * 4, 8);
+    gl.bindVertexArray(null);
 
     // one VAO with the fullscreen quad, one empty VAO for attribute-less
     // particle draws (gl_VertexID) — leaving quad attributes enabled would
@@ -80,6 +96,7 @@ export class Renderer {
       this.renderDots(posVelTex, count, world);
       this.renderObstacles(world);
     }
+    this.renderDuck(world);
   }
 
   setParticleUniforms(u, posVelTex, world, pointSize) {
@@ -171,5 +188,20 @@ export class Renderer {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
     gl.disable(gl.BLEND);
+  }
+
+  renderDuck(world) {
+    const pose = this.params.duckPose;
+    if (!pose) return;
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.useProgram(this.progDuck);
+    gl.uniform2f(this.uDuck.uWorld, world.w, world.h);
+    gl.uniform4f(this.uDuck.uPose, pose.x, pose.y, Math.cos(pose.angle), Math.sin(pose.angle));
+    gl.uniform1f(this.uDuck.uScale, pose.scale);
+    gl.bindVertexArray(this.duckVAO);
+    gl.drawArrays(gl.TRIANGLES, 0, DUCK_MESH.length / DUCK_STRIDE);
+    gl.bindVertexArray(null);
   }
 }

@@ -5,7 +5,7 @@ browser. All physics runs on the GPU:
 
 - **WebGL2 backend** (default) — fragment-shader SPH up to 262k particles,
   with two physics modes (force SPH and PBF), vorticity confinement,
-  and drawable obstacles.
+  drawable obstacles, and a rigid-body rubber duck floating on the fluid.
 - **WebGPU backend** (`?backend=webgpu`) — compute-shader SPH with an exact
   neighbor grid (atomic counting sort + prefix sum), up to **1M+ particles**.
 
@@ -17,20 +17,23 @@ ES modules can't load over `file://`, so serve the directory:
 npm run dev        # static server -> http://localhost:8123
 ```
 
-Controls: drag to push fluid, right-drag to pull, `o` toggles obstacle
-drawing (drag stamps circular walls, right-drag erases), `e` toggles the
-eraser (drag removes walls near the cursor), `space` pause, `r` reset.
+Controls: drag to push fluid, right-drag to pull; a drag starting on the
+duck grabs it (release mid-swing to throw), and the arrow keys steer it.
+`o` toggles obstacle drawing (drag stamps circular walls, right-drag
+erases), `e` toggles the eraser (drag removes walls near the cursor),
+`space` pause, `r` reset.
 
 URL parameters for reproducible states:
 `?backend=webgpu&scene=drop&mode=dots&phys=pbf&n=100000&t=3&ob=0.5,0.8,0.06`
 — `t` fast-forwards the sim synchronously; `ob` places obstacles as
-`x,y,r` fractions of world size (`;`-separated).
+`x,y,r` fractions of world size (`;`-separated); `duck=0` disables the duck.
 
 ## Test / validate
 
 ```
 npm test                                        # WebGL2 physics suite
 node tools/test-headless.mjs test/webgpu.html   # WebGPU physics suite
+node tools/test-duck-input.mjs                  # duck keyboard/drag wiring
 node tools/shot.mjs "?n=25000&t=1.5"            # screenshot -> shots/last.png
 ```
 
@@ -49,7 +52,8 @@ src/
   main.js                     bootstrap, backend pick, fixed-timestep loop
   config.js                   all tunables + shared constants
   sim/
-    spawn.js                  initial conditions: damBreak, doubleDam, drop
+    spawn.js                  initial conditions: damBreak, doubleDam, drop, sphere
+    duck.js                   rubber duck: polygon mesh + rigid-body dynamics
     gpu/                      WebGL2 solver
       gpusolver.js            pipeline orchestration (force + PBF modes)
       shaders.js              force SPH: scatter, density+curl MRT, force
@@ -77,6 +81,7 @@ test/webgpu.html              WebGPU physics checks
 | PBF (position-based)   | ✓      | ✓      |
 | Vorticity confinement  | ✓      | ✓      |
 | Obstacles              | ✓      | ✓      |
+| Rubber duck (rigid body) | ✓    | ✓      |
 | Max particles          | 262144 | 1048576 |
 | Neighbor grid          | 8 slots/cell (stencil routing) | exact (counting sort) |
 
@@ -106,6 +111,21 @@ a growable storage buffer on WebGPU) evaluated analytically in the collision
 step and drawn as an SDF overlay. Cleared when the particle count changes
 (the world rescales).
 
+**Rubber duck** (`src/sim/duck.js`): a 2D rigid body (position + rotation)
+whose hull is approximated by two circles appended to the obstacle list, so
+the existing boundary springs displace fluid around it in both modes on both
+backends. The fluid→duck force is the Newton's-third-law reaction of those
+springs, summed over all particles by a per-frame GPU reduction
+(`solver.sampleDuckForce`): WebGL2 additive-blends per-particle contributions
+into a 1×1 float target and reads back synchronously; WebGPU accumulates
+fixed-point atomics and reads back asynchronously (the body integrates with a
+frame-stale force). Buoyancy is emergent — pressure presses particles into
+the spring zone until the contact sum carries the duck's weight — and the
+center of mass sits below the hull-circle centers, which gives the
+metacentric righting torque that keeps the duck upright. The visible duck is
+a polygon mesh (body/wing/head/beak/eye triangle fans) drawn by both
+renderers with the rigid transform.
+
 ### Scaling to large counts
 
 All physics constants were tuned (and are verified) at 3000 particles in a
@@ -125,7 +145,7 @@ nothing round-trips through JavaScript.
 
 ## Ideas to expand
 
-- Rigid-body coupling (two-way forces on the obstacle circles).
+- More rigid bodies (the duck's circle-hull + GPU force reduction generalizes).
 - Polygonal / freehand obstacle SDFs via jump-flooding.
 - Multiphase fluids (per-particle density/color, buoyancy).
 - Thermal convection (temperature advection + buoyant force).

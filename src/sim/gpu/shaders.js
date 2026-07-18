@@ -121,6 +121,53 @@ void collide(inout vec2 pos, inout vec2 vel) {
 }
 `;
 
+// Duck reaction-force reduction: every particle recomputes its boundary
+// spring against the duck's hull circles and the negated force (Newton's
+// third law) + torque about the duck center are summed by drawing all
+// particles as points onto a 1x1 float target with additive blending.
+// Contributions are pre-scaled by uOutScale so the half-float fallback
+// target can't saturate.
+export const duckForceVS = `#version 300 es
+precision highp float;
+uniform sampler2D uPosVel;
+uniform int uTexWidth;
+uniform int uCount;
+uniform float uWallK, uWallC, uMargin, uMass, uOutScale;
+uniform vec2 uDuckCenter;
+uniform int uDuckCount;
+uniform vec4 uDuck[8];   // xy = center, z = radius
+flat out vec4 vForce;
+void main() {
+  ivec2 tc = ivec2(gl_VertexID % uTexWidth, gl_VertexID / uTexWidth);
+  vec4 pv = texelFetch(uPosVel, tc, 0);
+  vec2 F = vec2(0.0);
+  float contacts = 0.0;
+  for (int k = 0; k < uDuckCount; k++) {
+    vec2 d = pv.xy - uDuck[k].xy;
+    float dist = length(d);
+    float pen = uDuck[k].z + uMargin - dist;
+    if (pen > 0.0 && dist > 1e-4) {
+      vec2 nrm = d / dist;
+      float vn = dot(pv.zw, nrm);
+      float mag = max(uWallK * pen - uWallC * min(vn, 0.0), 0.0);
+      F -= mag * uMass * nrm;   // reaction on the duck
+      contacts += 1.0;
+    }
+  }
+  vec2 r = pv.xy - uDuckCenter;
+  vForce = vec4(F, r.x * F.y - r.y * F.x, contacts) * uOutScale;
+  gl_PointSize = 1.0;
+  // non-contacting (and out-of-range) particles rasterize nothing
+  gl_Position = (gl_VertexID < uCount && contacts > 0.0)
+    ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(2.0, 2.0, 0.0, 1.0);
+}`;
+
+export const duckForceFS = `#version 300 es
+precision highp float;
+flat in vec4 vForce;
+out vec4 fragColor;
+void main() { fragColor = vForce; }`;
+
 // Pass: density + pressure + vorticity per particle (MRT):
 //   out0 = (rho, rhoNear, P, Pnear)     out1 = (omega, |omega|, 0, 0)
 export const densityFS = `#version 300 es

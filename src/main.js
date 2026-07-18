@@ -6,6 +6,7 @@
 import { createParams, WORLD_HEIGHT, REF_COUNT } from "./config.js";
 import { GPUSolver } from "./sim/gpu/gpusolver.js";
 import { spawners } from "./sim/spawn.js";
+import { Duck } from "./sim/duck.js";
 import { Renderer } from "./render/renderer.js";
 import { setupControls } from "./ui/controls.js";
 import { setupPointer } from "./ui/pointer.js";
@@ -60,7 +61,16 @@ function run(solver, renderer) {
 
   let paused = false;
 
+  // rubber duck rigid body: hull circles couple into the solvers' obstacle
+  // path, the fluid reaction force is sampled from the GPU once per frame
+  const duck = new Duck(params);
+  let duckForce = null;
+
   function respawn(presetName) {
+    if (params.duck) {
+      duck.reset(world);
+      duckForce = null;
+    }
     const spawn = spawners[presetName] || spawners.damBreak;
     const n = solver.count;
     const state = {
@@ -87,8 +97,13 @@ function run(solver, renderer) {
       hud.setCount(solver.count, backend, params.physics);
     },
     onPauseToggle: () => (paused = !paused),
+    onDuckToggle: () => {
+      if (params.duck) duck.reset(world);
+      else duck.remove();
+      duckForce = null;
+    },
   });
-  setupPointer(canvas, solver, params);
+  setupPointer(canvas, solver, params, duck);
 
   // URL overrides, e.g. ?scene=drop&mode=dots&phys=pbf&n=100000&t=3
   // (t fast-forwards the sim — deterministic screenshots / debugging).
@@ -101,6 +116,7 @@ function run(solver, renderer) {
   if (query.get("mode") === "dots" || query.get("mode") === "liquid") {
     document.getElementById("mode-" + query.get("mode")).click();
   }
+  if (query.get("duck") === "0") controls.setDuck(false);
 
   resize();
   solver.alloc(params.count);
@@ -119,11 +135,27 @@ function run(solver, renderer) {
 
   // ?t= is wall-clock viewing seconds: scaled like the live loop so the
   // same t shows the same stage of the flow at every count
-  const fastForward = parseFloat(query.get("t"));
-  if (fastForward > 0) {
+  async function fastForwardSim() {
+    const fastForward = parseFloat(query.get("t"));
+    if (!(fastForward > 0)) return;
     const simSeconds = fastForward * (world.h / WORLD_HEIGHT);
     const steps = Math.min(Math.round(simSeconds / params.dt), 20000);
-    for (let i = 0; i < steps; i++) solver.step(params.dt);
+    for (let i = 0; i < steps; i++) {
+      if (params.duck && duck.pose) {
+        // resample sparsely: WebGL2 reads back synchronously, and on
+        // WebGPU the async readback must be awaited (the render loop
+        // isn't turning, so a stale value would never resolve)
+        if (i % 8 === 0) {
+          duckForce = solver.sampleDuckForce(params.duckCircles, duck.pose.x, duck.pose.y);
+          if (solver.duckReadPromise) {
+            await solver.duckReadPromise;
+            duckForce = solver.duckForce;
+          }
+        }
+        duck.step(params.dt, world, duckForce);
+      }
+      solver.step(params.dt);
+    }
   }
 
   // --- fixed-timestep loop ------------------------------------------------
@@ -143,20 +175,31 @@ function run(solver, renderer) {
       const t0 = performance.now();
       let steps = 0;
       while (accumulator >= params.dt && steps < params.maxSubsteps) {
+        if (params.duck && duck.pose) duck.step(params.dt, world, duckForce);
         solver.step(params.dt);
         accumulator -= params.dt;
         steps++;
       }
       if (steps === params.maxSubsteps) accumulator = 0; // can't keep up: drop time
+      // one reduction + readback per frame; the force is held constant
+      // across next frame's substeps (sync on WebGL2, async on WebGPU)
+      if (steps > 0 && params.duck && duck.pose) {
+        duckForce = solver.sampleDuckForce(params.duckCircles, duck.pose.x, duck.pose.y);
+      }
       simMs = performance.now() - t0;
     }
 
     renderer.render(solver.posVelTexture(), solver.count, world);
     hud.frame(simMs);
     window.__frames = (window.__frames || 0) + 1; // headless tooling waits on this
+    window.__params = params;                     // headless tooling inspects these
+    window.__duck = duck;                         // (tools/test-duck-input.mjs)
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+  fastForwardSim().then(() => {
+    lastTime = performance.now();
+    requestAnimationFrame(frame);
+  });
 }
 
 boot();

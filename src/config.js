@@ -29,8 +29,8 @@ export function createParams() {
     gravity: 15,
     gravityCenter: false, // pull toward the world center instead of straight down
     viscosity: 1.5,
-    stiffness: 600, // force mode: P = k (rho - rho0)
-    nearStiffness: 60, // force mode: anti-clump / surface tension
+    stiffness: 1000, // force mode: P = k (rho - rho0)
+    nearStiffness: 0, // force mode: anti-clump / surface tension
     vorticity: 1.5, // vorticity confinement strength (force mode only)
 
     // PBF-specific (fixed; exposed here for tests/tuning)
@@ -55,6 +55,10 @@ export function createParams() {
     eraseObstacles: false, // eraser tool: drag removes obstacles near the cursor
     obstacleRadius: 3, // drawn wall stamp radius, world units at the reference world size
     obstacles: [], // {x, y, r} in world units
+    duck: false, // rubber duck rigid body floating on the fluid
+    duckCircles: [], // duck hull circles {x, y, r}, appended to obstacles by the solvers
+    duckPose: null, // {x, y, angle, scale} published by the Duck body for the renderers
+    duckThrust: { x: 0, y: 0 }, // arrow-key force direction on the duck (unit-ish)
 
     // rendering
     renderMode: "liquid", // "liquid" | "dots"

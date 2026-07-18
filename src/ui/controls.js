@@ -1,6 +1,6 @@
 // Wires the control panel to the live params object and app callbacks.
 // callbacks: { backend, maxCount, onReset(preset), onCountChange(),
-//              onPhysicsChange(), onPauseToggle() }
+//              onPhysicsChange(), onPauseToggle(), onDuckToggle() }
 
 import { DT_FORCE, DT_PBF } from "../config.js";
 
@@ -15,6 +15,11 @@ const fmtCount = (n) =>
 
 export function setupControls(params, callbacks) {
   const $ = (id) => document.getElementById(id);
+
+  // accordion: click the header bar to collapse/expand the control panel
+  $("ui-header").addEventListener("click", () => {
+    $("ui").classList.toggle("collapsed");
+  });
 
   const bindSlider = (id, key) => {
     const el = $(id);
@@ -150,6 +155,18 @@ export function setupControls(params, callbacks) {
   });
   syncTools();
 
+  // rubber duck rigid body
+  const duckButtons = { on: $("duck-on"), off: $("duck-off") };
+  const setDuck = (on, fire = true) => {
+    params.duck = on;
+    duckButtons.on.classList.toggle("active", on);
+    duckButtons.off.classList.toggle("active", !on);
+    if (fire) callbacks.onDuckToggle();
+  };
+  duckButtons.on.addEventListener("click", () => setDuck(true));
+  duckButtons.off.addEventListener("click", () => setDuck(false));
+  setDuck(params.duck, false);
+
   // scene preset
   const presetEl = $("preset");
   presetEl.addEventListener("change", () => callbacks.onReset(presetEl.value));
@@ -163,6 +180,20 @@ export function setupControls(params, callbacks) {
   pauseBtn.addEventListener("click", () => syncPause(callbacks.onPauseToggle()));
   $("reset").addEventListener("click", () => callbacks.onReset(presetEl.value));
 
+  // arrow keys apply a steering force to the duck while held
+  const arrows = {
+    ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
+  };
+  const held = new Set();
+  const syncThrust = () => {
+    params.duckThrust.x = 0;
+    params.duckThrust.y = 0;
+    for (const code of held) {
+      params.duckThrust.x += arrows[code][0];
+      params.duckThrust.y += arrows[code][1];
+    }
+  };
+
   window.addEventListener("keydown", (e) => {
     if (e.code === "Space") {
       e.preventDefault();
@@ -173,7 +204,21 @@ export function setupControls(params, callbacks) {
       drawBtn.click();
     } else if (e.code === "KeyE") {
       eraseBtn.click();
+    } else if (arrows[e.code]) {
+      e.preventDefault(); // keep the page/sliders from scrolling
+      held.add(e.code);
+      syncThrust();
     }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (arrows[e.code]) {
+      held.delete(e.code);
+      syncThrust();
+    }
+  });
+  window.addEventListener("blur", () => {
+    held.clear();
+    syncThrust();
   });
 
   setPhysics(params.physics, false);
@@ -183,5 +228,6 @@ export function setupControls(params, callbacks) {
     currentPreset: () => presetEl.value,
     setCount: (n) => { if (n > 0) applyCount(n); },
     setPhysics: (name) => setPhysics(name, false),
+    setDuck: (on) => setDuck(on, false),
   };
 }
