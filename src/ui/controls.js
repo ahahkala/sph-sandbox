@@ -15,11 +15,53 @@ const fmtCount = (n) =>
 
 export function setupControls(params, callbacks) {
   const $ = (id) => document.getElementById(id);
+  const query = new URLSearchParams(location.search);
 
   // accordion: click the header bar to collapse/expand the control panel
   $("ui-header").addEventListener("click", () => {
     $("ui").classList.toggle("collapsed");
   });
+
+  // shared serialization of every persisted control, used both to keep the
+  // address bar in sync as controls change and to build the URL a backend
+  // switch reloads into (a canvas can't change context type live). Declared
+  // as a function so it hoists — it's only ever called after the elements
+  // and state it closes over (presetEl, pauseBtn, params, …) are set up.
+  function buildQuery() {
+    const q = new URLSearchParams();
+    if (callbacks.backend === "webgpu") q.set("backend", "webgpu");
+    q.set("scene", presetEl.value);
+    q.set("phys", params.physics);
+    q.set("mode", params.renderMode);
+    q.set("n", params.count);
+    q.set("duck", params.duck ? "1" : "0");
+    q.set("gravity", params.gravity);
+    q.set("gravdir", params.gravityCenter ? "center" : "down");
+    q.set("viscosity", params.viscosity);
+    q.set("stiffness", params.stiffness);
+    q.set("nearstiff", params.nearStiffness);
+    q.set("vorticity", params.vorticity);
+    q.set("pointer", params.pointerStrength);
+    q.set("obstsize", params.obstacleRadius);
+    q.set("paused", pauseBtn.classList.contains("active") ? "1" : "0");
+    return q;
+  }
+  const syncURL = () => history.replaceState(null, "", "?" + buildQuery().toString());
+
+  // slider values are overridden from the URL before the sliders bind, so
+  // bindSlider's `el.value = params[key]` picks up the shared/restored value
+  const numOverride = (queryKey, paramsKey) => {
+    const v = parseFloat(query.get(queryKey));
+    if (Number.isFinite(v)) params[paramsKey] = v;
+  };
+  numOverride("gravity", "gravity");
+  numOverride("viscosity", "viscosity");
+  numOverride("stiffness", "stiffness");
+  numOverride("nearstiff", "nearStiffness");
+  numOverride("vorticity", "vorticity");
+  numOverride("pointer", "pointerStrength");
+  numOverride("obstsize", "obstacleRadius");
+  if (query.has("gravdir")) params.gravityCenter = query.get("gravdir") === "center";
 
   const bindSlider = (id, key) => {
     const el = $(id);
@@ -84,12 +126,9 @@ export function setupControls(params, callbacks) {
   for (const [name, btn] of Object.entries(backendButtons)) {
     btn.addEventListener("click", () => {
       if (name === callbacks.backend) return;
-      const q = new URLSearchParams();
+      const q = buildQuery();
       if (name === "webgpu") q.set("backend", "webgpu");
-      q.set("n", params.count);
-      q.set("phys", params.physics);
-      q.set("scene", $("preset").value);
-      q.set("mode", params.renderMode);
+      else q.delete("backend");
       location.search = q.toString();
     });
   }
@@ -198,6 +237,7 @@ export function setupControls(params, callbacks) {
     if (e.code === "Space") {
       e.preventDefault();
       syncPause(callbacks.onPauseToggle());
+      syncURL();
     } else if (e.code === "KeyR") {
       callbacks.onReset(presetEl.value);
     } else if (e.code === "KeyO") {
@@ -221,13 +261,27 @@ export function setupControls(params, callbacks) {
     syncThrust();
   });
 
-  setPhysics(params.physics, false);
-  applyCount(params.count);
+  // restore scene/physics/count/mode/duck/paused from the URL — the
+  // numeric sliders and gravity direction were already restored above,
+  // before their controls bound to params
+  if (query.has("scene") && [...presetEl.options].some((o) => o.value === query.get("scene"))) {
+    presetEl.value = query.get("scene");
+  }
+  setPhysics(query.get("phys") || params.physics, false);
+  applyCount(query.get("n") ? parseInt(query.get("n"), 10) : params.count);
+  if (query.get("mode") === "dots" || query.get("mode") === "liquid") setMode(query.get("mode"));
+  if (query.has("duck")) setDuck(query.get("duck") !== "0", false);
+  if (query.get("paused") === "1") syncPause(callbacks.onPauseToggle());
+
+  // keep the address bar in sync with every control change so the current
+  // state is always shareable/reloadable; delegated on the panel so it
+  // fires after the control's own handler has already updated params
+  syncURL();
+  $("ui-content").addEventListener("input", syncURL);
+  $("ui-content").addEventListener("change", syncURL);
+  $("ui-content").addEventListener("click", syncURL);
 
   return {
     currentPreset: () => presetEl.value,
-    setCount: (n) => { if (n > 0) applyCount(n); },
-    setPhysics: (name) => setPhysics(name, false),
-    setDuck: (on) => setDuck(on, false),
   };
 }

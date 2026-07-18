@@ -105,19 +105,9 @@ function run(solver, renderer) {
   });
   setupPointer(canvas, solver, params, duck);
 
-  // URL overrides, e.g. ?scene=drop&mode=dots&phys=pbf&n=100000&t=3
-  // (t fast-forwards the sim — deterministic screenshots / debugging).
-  // ?ob=fx,fy,fr;… adds obstacles as fractions of world size.
-  if (query.get("n")) controls.setCount(parseInt(query.get("n"), 10));
-  if (query.get("phys")) controls.setPhysics(query.get("phys"));
-  if (spawners[query.get("scene")]) {
-    document.getElementById("preset").value = query.get("scene");
-  }
-  if (query.get("mode") === "dots" || query.get("mode") === "liquid") {
-    document.getElementById("mode-" + query.get("mode")).click();
-  }
-  if (query.get("duck") === "0") controls.setDuck(false);
-
+  // scene/physics/count/mode/duck/gravity/etc. are already restored from
+  // the URL inside setupControls; ?t= (fast-forward) and ?ob= (obstacles,
+  // fractions of world size) are one-shot and applied below/after resize.
   resize();
   solver.alloc(params.count);
   respawn(controls.currentPreset());
