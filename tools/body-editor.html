@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SPH body editor</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; overflow: hidden; background: #05070d; }
+      body {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        color: #cdd9ef;
+        font-size: 12px;
+        display: flex;
+      }
+
+      /* --- stage (canvas) --- */
+      #stage { flex: 1; position: relative; min-width: 0; }
+      #view { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+      #tip {
+        position: absolute; bottom: 10px; left: 12px; right: 12px;
+        color: #45587a; font-size: 11px; pointer-events: none; text-align: center;
+      }
+      #drop-hint {
+        position: absolute; inset: 24px;
+        border: 2px dashed rgba(120, 160, 220, 0.35); border-radius: 12px;
+        display: flex; align-items: center; justify-content: center;
+        color: #6a7a99; font-size: 14px; pointer-events: none; opacity: 0;
+        transition: opacity 0.15s ease;
+      }
+      #stage.dragover #drop-hint { opacity: 1; background: rgba(90, 140, 240, 0.08); }
+
+      /* --- panel --- */
+      #panel {
+        flex: 0 0 320px; height: 100%; overflow-y: auto;
+        background: rgba(10, 16, 28, 0.92);
+        border-left: 1px solid rgba(120, 160, 220, 0.18);
+        padding: 14px 16px 40px;
+      }
+      h1 { font-size: 13px; letter-spacing: 0.5px; color: #8fb4ff; font-weight: 600; }
+      .sub { font-size: 10px; color: #6a7a99; margin: 2px 0 14px; }
+      h2 {
+        font-size: 10px; letter-spacing: 0.8px; text-transform: uppercase;
+        color: #6a7a99; margin: 18px 0 8px; font-weight: 600;
+        border-bottom: 1px solid rgba(120, 160, 220, 0.12); padding-bottom: 4px;
+      }
+      .row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+      .row label { flex: 0 0 96px; color: #9fb0cc; font-size: 11px; }
+      .row input[type="text"], .row input[type="number"] {
+        flex: 1; min-width: 0; background: rgba(70, 110, 200, 0.14);
+        color: #dbe6ff; border: 1px solid rgba(120, 160, 220, 0.25);
+        border-radius: 6px; padding: 5px 7px; font: inherit; font-size: 11px;
+      }
+      .row select {
+        flex: 1; min-width: 0; background: rgba(70, 110, 200, 0.14);
+        color: #dbe6ff; border: 1px solid rgba(120, 160, 220, 0.25);
+        border-radius: 6px; padding: 5px 7px; font: inherit; font-size: 11px;
+      }
+      .row input:focus, .row select:focus { outline: none; border-color: #6f9dff; }
+      .row .unit { flex: 0 0 auto; color: #6a7a99; font-size: 10px; }
+      .row.compact label { flex: 0 0 96px; }
+      .checkrow { display: flex; align-items: center; gap: 6px; }
+      .checkrow input { accent-color: #5b8dff; }
+      .checkrow span { color: #7fa0d8; font-size: 10px; }
+      button {
+        background: rgba(70, 110, 200, 0.18); color: #b9c9ea;
+        border: 1px solid rgba(120, 160, 220, 0.25); border-radius: 6px;
+        padding: 6px 8px; font: inherit; font-size: 11px; cursor: pointer;
+      }
+      button:hover { background: rgba(90, 140, 240, 0.32); color: #eaf1ff; }
+      button.wide { width: 100%; }
+      .btns { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+      .btns button { flex: 1; }
+      .readout { color: #7fa0d8; font-size: 10px; line-height: 1.5; margin: 6px 0; }
+      .readout b { color: #9fb0cc; font-weight: 600; }
+      textarea {
+        width: 100%; height: 210px; resize: vertical;
+        background: #060a12; color: #b6d3a0; border: 1px solid rgba(120, 160, 220, 0.25);
+        border-radius: 6px; padding: 8px; font: inherit; font-size: 10.5px; line-height: 1.45;
+        white-space: pre; overflow: auto;
+      }
+      .hulllist { margin: 6px 0; max-height: 118px; overflow-y: auto; }
+      .hullitem {
+        display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px;
+        font-size: 10px; color: #8ea3c6; cursor: pointer;
+      }
+      .hullitem.sel { background: rgba(90, 140, 240, 0.22); color: #eaf1ff; }
+      .hullitem .del { flex: 0 0 auto; color: #c77; padding: 0 4px; }
+      .hullitem .del:hover { color: #f99; }
+      .note { color: #566a8c; font-size: 10px; line-height: 1.5; margin: 4px 0; }
+      #copied { color: #7ecb8f; font-size: 10px; margin-left: 6px; opacity: 0; transition: opacity .2s; }
+      input[type="file"] { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="view"></canvas>
+      <div id="drop-hint">drop a PNG here</div>
+      <div id="tip">
+        drag circle = move · drag edge = resize · drag ✛ = move origin · drag empty = pan ·
+        wheel = zoom · dbl-click = add circle · Del = delete selected
+      </div>
+    </div>
+
+    <div id="panel">
+      <h1>SPH BODY EDITOR</h1>
+      <div class="sub">draw a hull over a sprite, export a BODY_TYPES entry</div>
+
+      <h2>Sprite</h2>
+      <div class="row">
+        <label>Load existing</label>
+        <select id="load-select"></select>
+      </div>
+      <div class="btns">
+        <button id="open" class="wide">Open PNG…</button>
+      </div>
+      <input type="file" id="file" accept="image/png,image/*" />
+      <div class="readout" id="img-readout">no image loaded</div>
+
+      <h2>Identity</h2>
+      <div class="row"><label>Name (id)</label><input type="text" id="name" placeholder="e.g. barrel" /></div>
+      <div class="row"><label>Label</label><input type="text" id="label" placeholder="Barrel" /></div>
+
+      <h2>Scale &amp; frame</h2>
+      <div class="row"><label>Px per unit</label><input type="number" id="ppu" step="1" min="1" /><span class="unit">px/u</span></div>
+      <div class="btns"><button id="center-origin" class="wide">Center origin on image</button></div>
+      <div class="readout" id="frame-readout"></div>
+
+      <h2>Physics</h2>
+      <div class="row"><label>Density rel</label><input type="number" id="densityRel" step="0.05" /><span class="unit">×fluid</span></div>
+      <div class="note" id="float-note"></div>
+      <div class="row"><label>Size</label><input type="number" id="size" step="0.1" /><span class="unit">world u</span></div>
+      <div class="row">
+        <label>Hull area</label><input type="number" id="hullArea" step="0.1" />
+        <div class="checkrow"><input type="checkbox" id="hullArea-auto" checked /><span>auto</span></div>
+      </div>
+      <div class="row">
+        <label>Inertia f.</label><input type="number" id="inertiaFactor" step="0.01" />
+        <div class="checkrow"><input type="checkbox" id="inertiaFactor-auto" checked /><span>auto</span></div>
+      </div>
+
+      <h2>Hull circles</h2>
+      <div class="btns">
+        <button id="add-circle">Add circle</button>
+        <button id="clear-hull">Clear</button>
+      </div>
+      <div class="hulllist" id="hulllist"></div>
+
+      <h2>Export</h2>
+      <div class="btns">
+        <button id="copy">Copy code</button>
+        <button id="download-png">Download PNG</button>
+        <button id="download-json">Download JSON</button>
+      </div>
+      <span id="copied">copied ✓</span>
+      <textarea id="code" readonly spellcheck="false"></textarea>
+      <div class="note">
+        Paste the entry into <b>src/sim/bodytypes.js</b> and drop the PNG in
+        <b>assets/</b> as <b>&lt;name&gt;.png</b>. It appears in the sim's Object
+        dropdown automatically.
+      </div>
+
+      <h2>Import</h2>
+      <div class="note">Paste a BODY_TYPES entry (JS or JSON) to edit it:</div>
+      <textarea id="import" style="height: 90px; color: #cdd9ef" spellcheck="false" placeholder='{ "rect": {…}, "hull": […], … }'></textarea>
+      <div class="btns"><button id="import-btn" class="wide">Load pasted entry</button></div>
+    </div>
+
+    <script type="module">
+      // Live catalogue, so "Load duck/brick" round-trips the shipped bodies.
+      // (Served over http by `npm run dev`, so the ES import resolves.)
+      let BODY_TYPES = {};
+      try {
+        ({ BODY_TYPES } = await import("../src/sim/bodytypes.js"));
+      } catch (e) {
+        console.warn("catalogue import failed (serve with npm run dev):", e);
+      }
+
+      const $ = (id) => document.getElementById(id);
+      const canvas = $("view");
+      const ctx = canvas.getContext("2d");
+
+      // --- editor state --------------------------------------------------------
+      // The sprite maps onto the whole `rect`, so the rect is the image bounds:
+      // the only real freedoms are the origin (center of mass, in image pixels)
+      // and px-per-unit (the local scale). Hull circles are stored in image
+      // pixels so they stay pinned to the art; their local values fall out of
+      // the origin + ppu on export. Local frame is y-down, same as the sim.
+      const state = {
+        img: null, // HTMLImageElement
+        blob: null, // original PNG bytes, for Download PNG
+        W: 0, H: 0, // natural image size in px
+        ox: 0, oy: 0, // origin in image px
+        ppu: 128, // pixels per local unit (make-sprites convention)
+        circles: [], // { cx, cy, r } in image px
+        sel: -1,
+        name: "body",
+        label: "Body",
+        densityRel: 0.45,
+        size: 3.0,
+        hullArea: null, // null => auto
+        inertiaFactor: null, // null => auto
+      };
+
+      const view = { zoom: 1, panX: 0, panY: 0 }; // screen = px*zoom + pan
+
+      // --- canvas sizing (crisp on HiDPI) -------------------------------------
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        draw();
+      }
+      window.addEventListener("resize", resize);
+
+      function fitView() {
+        if (!state.W) return;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        const z = Math.min(w / state.W, h / state.H) * 0.8;
+        view.zoom = z;
+        view.panX = (w - state.W * z) / 2;
+        view.panY = (h - state.H * z) / 2;
+      }
+
+      const toScreen = (px, py) => ({ x: px * view.zoom + view.panX, y: py * view.zoom + view.panY });
+      const toImage = (sx, sy) => ({ x: (sx - view.panX) / view.zoom, y: (sy - view.panY) / view.zoom });
+
+      // --- drawing ------------------------------------------------------------
+      function draw() {
+        const dpr = window.devicePixelRatio || 1;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        ctx.clearRect(0, 0, w, h);
+
+        // transparency checkerboard behind the image
+        if (state.img) {
+          const tl = toScreen(0, 0), br = toScreen(state.W, state.H);
+          drawChecker(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+          ctx.imageSmoothingEnabled = view.zoom < 3;
+          ctx.drawImage(state.img, tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+
+          // rect outline = image bounds
+          ctx.strokeStyle = "rgba(120,180,255,0.7)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(tl.x + 0.5, tl.y + 0.5, br.x - tl.x, br.y - tl.y);
+        } else {
+          ctx.fillStyle = "#6a7a99";
+          ctx.font = "13px ui-monospace, monospace";
+          ctx.textAlign = "center";
+          ctx.fillText("Open a PNG or load an example →", w / 2, h / 2);
+        }
+
+        // hull circles
+        state.circles.forEach((c, i) => {
+          const s = toScreen(c.cx, c.cy);
+          const r = c.r * view.zoom;
+          const sel = i === state.sel;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+          ctx.fillStyle = sel ? "rgba(90,220,200,0.22)" : "rgba(90,200,255,0.12)";
+          ctx.fill();
+          ctx.lineWidth = sel ? 2 : 1;
+          ctx.strokeStyle = sel ? "#6fe4d0" : "rgba(120,210,255,0.85)";
+          ctx.stroke();
+          // center dot + edge handle
+          dot(s.x, s.y, sel ? "#6fe4d0" : "#8ecbff");
+          if (sel) dot(s.x + r, s.y, "#6fe4d0");
+          ctx.fillStyle = sel ? "#dffaf3" : "rgba(180,220,255,0.7)";
+          ctx.font = "10px ui-monospace, monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(String(i + 1), s.x, s.y - 3);
+        });
+
+        // origin crosshair
+        if (state.img) {
+          const o = toScreen(state.ox, state.oy);
+          ctx.strokeStyle = "#ff5fce";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(o.x - 9, o.y); ctx.lineTo(o.x + 9, o.y);
+          ctx.moveTo(o.x, o.y - 9); ctx.lineTo(o.x, o.y + 9);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(o.x, o.y, 4, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      function dot(x, y, color) {
+        ctx.beginPath();
+        ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
+
+      function drawChecker(x, y, w, h) {
+        const t = 8;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.clip();
+        ctx.fillStyle = "#161b26";
+        ctx.fillRect(x, y, w, h);
+        ctx.fillStyle = "#1e2532";
+        for (let j = 0; j * t < h + t; j++)
+          for (let i = 0; i * t < w + t; i++)
+            if ((i + j) & 1) ctx.fillRect(x + i * t, y + j * t, t, t);
+        ctx.restore();
+      }
+
+      // --- geometry / auto-computed physics -----------------------------------
+      // Local units are pixels/ppu; both auto values are pure local-frame
+      // geometry sampled on a grid over the union of hull circles.
+      function hullSample() {
+        if (!state.circles.length) return null;
+        let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+        for (const c of state.circles) {
+          minx = Math.min(minx, c.cx - c.r); maxx = Math.max(maxx, c.cx + c.r);
+          miny = Math.min(miny, c.cy - c.r); maxy = Math.max(maxy, c.cy + c.r);
+        }
+        const N = 160;
+        const dx = (maxx - minx) / N, dy = (maxy - miny) / N;
+        const cellA = (dx * dy) / (state.ppu * state.ppu); // local area per cell
+        let area = 0, mr2 = 0;
+        for (let j = 0; j < N; j++) {
+          const py = miny + (j + 0.5) * dy;
+          for (let i = 0; i < N; i++) {
+            const px = minx + (i + 0.5) * dx;
+            let inside = false;
+            for (const c of state.circles) {
+              if ((px - c.cx) ** 2 + (py - c.cy) ** 2 <= c.r * c.r) { inside = true; break; }
+            }
+            if (!inside) continue;
+            area += cellA;
+            const lx = (px - state.ox) / state.ppu, ly = (py - state.oy) / state.ppu;
+            mr2 += (lx * lx + ly * ly) * cellA;
+          }
+        }
+        return { area, inertiaFactor: area > 0 ? mr2 / area : 0 };
+      }
+
+      const autoHullArea = () => { const s = hullSample(); return s ? s.area : 0; };
+      const autoInertia = () => { const s = hullSample(); return s ? s.inertiaFactor : 0.4; };
+
+      const effHullArea = () => state.hullArea != null ? state.hullArea : autoHullArea();
+      const effInertia = () => state.inertiaFactor != null ? state.inertiaFactor : autoInertia();
+
+      // --- export -------------------------------------------------------------
+      const fmt = (n) => {
+        const r = Math.round(n * 1000) / 1000;
+        return Object.is(r, -0) ? "0" : String(r);
+      };
+
+      function rect() {
+        return {
+          x0: -state.ox / state.ppu,
+          y0: -state.oy / state.ppu,
+          x1: (state.W - state.ox) / state.ppu,
+          y1: (state.H - state.oy) / state.ppu,
+        };
+      }
+
+      function hullLocal() {
+        return state.circles.map((c) => ({
+          x: (c.cx - state.ox) / state.ppu,
+          y: (c.cy - state.oy) / state.ppu,
+          r: c.r / state.ppu,
+        }));
+      }
+
+      function entryObject() {
+        const r = rect();
+        return {
+          label: state.label,
+          sprite: `asset("${state.name}.png")`,
+          rect: { x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1 },
+          hull: hullLocal(),
+          size: state.size,
+          densityRel: state.densityRel,
+          hullArea: effHullArea(),
+          inertiaFactor: effInertia(),
+        };
+      }
+
+      function codeText() {
+        const e = entryObject();
+        const hull = e.hull
+          .map((c) => `      { x: ${fmt(c.x)}, y: ${fmt(c.y)}, r: ${fmt(c.r)} },`)
+          .join("\n");
+        return (
+          `  ${state.name}: {\n` +
+          `    label: "${e.label}",\n` +
+          `    sprite: ${e.sprite},\n` +
+          `    rect: { x0: ${fmt(e.rect.x0)}, y0: ${fmt(e.rect.y0)}, x1: ${fmt(e.rect.x1)}, y1: ${fmt(e.rect.y1)} },\n` +
+          `    hull: [\n${hull}\n    ],\n` +
+          `    size: ${fmt(e.size)},\n` +
+          `    densityRel: ${fmt(e.densityRel)},\n` +
+          `    hullArea: ${fmt(e.hullArea)},\n` +
+          `    inertiaFactor: ${fmt(e.inertiaFactor)},\n` +
+          `  },`
+        );
+      }
+
+      // --- UI sync ------------------------------------------------------------
+      function refreshReadouts() {
+        if (state.img) {
+          $("img-readout").innerHTML =
+            `<b>${state.W}×${state.H}</b> px${state.blob ? ` · ${(state.blob.size / 1024).toFixed(1)} kB` : ""}`;
+          const r = rect();
+          const lw = state.W / state.ppu, lh = state.H / state.ppu;
+          $("frame-readout").innerHTML =
+            `local size <b>${fmt(lw)}×${fmt(lh)}</b> u · ` +
+            `rect x[${fmt(r.x0)}, ${fmt(r.x1)}] y[${fmt(r.y0)}, ${fmt(r.y1)}]<br>` +
+            `world span <b>${fmt(lw * state.size)}×${fmt(lh * state.size)}</b> u`;
+        } else {
+          $("img-readout").textContent = "no image loaded";
+          $("frame-readout").textContent = "";
+        }
+        $("float-note").innerHTML = state.densityRel < 1
+          ? `&lt; 1 → <b style="color:#7ecb8f">floats</b>`
+          : `≥ 1 → <b style="color:#e0a06a">sinks</b>`;
+      }
+
+      function refreshFields() {
+        $("name").value = state.name;
+        $("label").value = state.label;
+        $("ppu").value = state.ppu;
+        $("densityRel").value = state.densityRel;
+        $("size").value = state.size;
+        $("hullArea-auto").checked = state.hullArea == null;
+        $("inertiaFactor-auto").checked = state.inertiaFactor == null;
+        $("hullArea").disabled = state.hullArea == null;
+        $("inertiaFactor").disabled = state.inertiaFactor == null;
+        $("hullArea").value = fmt(effHullArea());
+        $("inertiaFactor").value = fmt(effInertia());
+      }
+
+      function refreshHullList() {
+        const list = $("hulllist");
+        list.innerHTML = "";
+        state.circles.forEach((c, i) => {
+          const row = document.createElement("div");
+          row.className = "hullitem" + (i === state.sel ? " sel" : "");
+          const lx = (c.cx - state.ox) / state.ppu, ly = (c.cy - state.oy) / state.ppu;
+          row.innerHTML =
+            `<span style="flex:1">#${i + 1} &nbsp; x ${fmt(lx)}  y ${fmt(ly)}  r ${fmt(c.r / state.ppu)}</span>` +
+            `<span class="del" title="delete">✕</span>`;
+          row.addEventListener("click", (e) => {
+            if (e.target.classList.contains("del")) { state.circles.splice(i, 1); state.sel = -1; syncAll(); }
+            else { state.sel = i; syncAll(); }
+          });
+          list.appendChild(row);
+        });
+      }
+
+      function syncAll() {
+        // auto fields depend on circles/origin/ppu, so recompute every change
+        refreshFields();
+        refreshReadouts();
+        refreshHullList();
+        $("code").value = codeText();
+        draw();
+      }
+
+      // --- image loading ------------------------------------------------------
+      function loadBlob(blob, name) {
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          state.img = img;
+          state.blob = blob;
+          state.W = img.naturalWidth;
+          state.H = img.naturalHeight;
+          state.ox = state.W / 2;
+          state.oy = state.H / 2;
+          if (name && (state.name === "body" || !state.name)) {
+            state.name = name.replace(/\.png$/i, "").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+            state.label = state.name.charAt(0).toUpperCase() + state.name.slice(1);
+          }
+          fitView();
+          syncAll();
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+      }
+
+      async function loadExample(name) {
+        const t = BODY_TYPES[name];
+        if (!t) return;
+        $("load-select").value = name; // keep the dropdown in sync
+        // round-trip the shipped entry: ppu 128 (make-sprites), origin from rect
+        state.ppu = 128;
+        state.name = name;
+        state.label = t.label;
+        state.densityRel = t.densityRel;
+        state.size = t.size;
+        state.hullArea = t.hullArea;
+        state.inertiaFactor = t.inertiaFactor;
+        const blob = await (await fetch(t.sprite)).blob();
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          state.img = img; state.blob = blob;
+          state.W = img.naturalWidth; state.H = img.naturalHeight;
+          state.ox = -t.rect.x0 * state.ppu;
+          state.oy = -t.rect.y0 * state.ppu;
+          state.circles = t.hull.map((c) => ({
+            cx: state.ox + c.x * state.ppu,
+            cy: state.oy + c.y * state.ppu,
+            r: c.r * state.ppu,
+          }));
+          state.sel = -1;
+          fitView();
+          syncAll();
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+      }
+
+      // --- pointer interaction ------------------------------------------------
+      const HANDLE = 8; // hit radius in screen px
+      let drag = null; // { type, ... }
+
+      function pick(sx, sy) {
+        // origin first, then circle edges, then circle bodies
+        if (state.img) {
+          const o = toScreen(state.ox, state.oy);
+          if (Math.hypot(sx - o.x, sy - o.y) <= HANDLE + 2) return { type: "origin" };
+        }
+        for (let i = state.circles.length - 1; i >= 0; i--) {
+          const c = state.circles[i];
+          const s = toScreen(c.cx, c.cy);
+          const r = c.r * view.zoom;
+          const d = Math.hypot(sx - s.x, sy - s.y);
+          if (Math.abs(d - r) <= HANDLE) return { type: "resize", i };
+          if (d < r) return { type: "move", i };
+        }
+        return { type: "pan" };
+      }
+
+      canvas.addEventListener("pointerdown", (e) => {
+        canvas.setPointerCapture(e.pointerId);
+        const sx = e.offsetX, sy = e.offsetY;
+        const hit = pick(sx, sy);
+        const im = toImage(sx, sy);
+        if (hit.type === "pan") {
+          drag = { type: "pan", sx, sy, panX: view.panX, panY: view.panY };
+        } else if (hit.type === "origin") {
+          drag = { type: "origin" };
+        } else {
+          state.sel = hit.i;
+          const c = state.circles[hit.i];
+          drag = hit.type === "resize"
+            ? { type: "resize", i: hit.i }
+            : { type: "move", i: hit.i, dx: c.cx - im.x, dy: c.cy - im.y };
+          syncAll();
+        }
+      });
+
+      canvas.addEventListener("pointermove", (e) => {
+        const sx = e.offsetX, sy = e.offsetY;
+        if (!drag) {
+          const t = pick(sx, sy).type;
+          canvas.style.cursor = t === "pan" ? "grab" : t === "resize" ? "ew-resize" : "move";
+          return;
+        }
+        const im = toImage(sx, sy);
+        if (drag.type === "pan") {
+          view.panX = drag.panX + (sx - drag.sx);
+          view.panY = drag.panY + (sy - drag.sy);
+          draw();
+        } else if (drag.type === "origin") {
+          state.ox = im.x; state.oy = im.y;
+          syncAll();
+        } else if (drag.type === "move") {
+          const c = state.circles[drag.i];
+          c.cx = im.x + drag.dx; c.cy = im.y + drag.dy;
+          syncAll();
+        } else if (drag.type === "resize") {
+          const c = state.circles[drag.i];
+          c.r = Math.max(2, Math.hypot(im.x - c.cx, im.y - c.cy));
+          syncAll();
+        }
+      });
+
+      canvas.addEventListener("pointerup", () => { drag = null; });
+
+      canvas.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        const sx = e.offsetX, sy = e.offsetY;
+        const before = toImage(sx, sy);
+        const f = Math.exp(-e.deltaY * 0.0015);
+        view.zoom = Math.max(0.05, Math.min(40, view.zoom * f));
+        // keep the point under the cursor fixed
+        view.panX = sx - before.x * view.zoom;
+        view.panY = sy - before.y * view.zoom;
+        draw();
+      }, { passive: false });
+
+      canvas.addEventListener("dblclick", (e) => {
+        if (!state.img) return;
+        const im = toImage(e.offsetX, e.offsetY);
+        addCircleAt(im.x, im.y);
+      });
+
+      function addCircleAt(cx, cy) {
+        const r = state.img ? Math.min(state.W, state.H) * 0.12 : 40;
+        state.circles.push({ cx, cy, r });
+        state.sel = state.circles.length - 1;
+        syncAll();
+      }
+
+      window.addEventListener("keydown", (e) => {
+        if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+        if ((e.key === "Delete" || e.key === "Backspace") && state.sel >= 0) {
+          state.circles.splice(state.sel, 1); state.sel = -1; syncAll();
+        }
+      });
+
+      // --- panel controls -----------------------------------------------------
+      $("open").addEventListener("click", () => $("file").click());
+      $("file").addEventListener("change", (e) => {
+        const f = e.target.files[0];
+        if (f) { loadBlob(f, f.name); $("load-select").value = ""; }
+      });
+
+      // "Load existing" dropdown, populated from whatever the catalogue holds
+      const loadSelect = $("load-select");
+      const catalogueNames = Object.keys(BODY_TYPES);
+      for (const name of catalogueNames) {
+        loadSelect.add(new Option(BODY_TYPES[name].label || name, name));
+      }
+      if (!catalogueNames.length) {
+        loadSelect.add(new Option("(catalogue unavailable)", ""));
+        loadSelect.disabled = true;
+      }
+      loadSelect.addEventListener("change", () => {
+        if (loadSelect.value) loadExample(loadSelect.value);
+      });
+
+      const bindText = (id, key) => $(id).addEventListener("input", (e) => {
+        state[key] = key === "name"
+          ? e.target.value.replace(/[^a-z0-9_]+/gi, "-").toLowerCase()
+          : e.target.value;
+        $("code").value = codeText();
+        if (id === "name") $("code").value = codeText();
+      });
+      bindText("name", "name");
+      bindText("label", "label");
+
+      const bindNum = (id, key, onChange) => $(id).addEventListener("input", (e) => {
+        const v = parseFloat(e.target.value);
+        if (Number.isFinite(v)) { state[key] = v; (onChange || syncAll)(); }
+      });
+      bindNum("ppu", "ppu");
+      bindNum("densityRel", "densityRel");
+      bindNum("size", "size");
+
+      $("hullArea").addEventListener("input", (e) => {
+        const v = parseFloat(e.target.value);
+        if (Number.isFinite(v)) { state.hullArea = v; $("code").value = codeText(); }
+      });
+      $("inertiaFactor").addEventListener("input", (e) => {
+        const v = parseFloat(e.target.value);
+        if (Number.isFinite(v)) { state.inertiaFactor = v; $("code").value = codeText(); }
+      });
+      $("hullArea-auto").addEventListener("change", (e) => {
+        state.hullArea = e.target.checked ? null : autoHullArea();
+        syncAll();
+      });
+      $("inertiaFactor-auto").addEventListener("change", (e) => {
+        state.inertiaFactor = e.target.checked ? null : autoInertia();
+        syncAll();
+      });
+
+      $("center-origin").addEventListener("click", () => {
+        state.ox = state.W / 2; state.oy = state.H / 2; syncAll();
+      });
+      $("add-circle").addEventListener("click", () => {
+        if (state.img) addCircleAt(state.W / 2, state.H / 2);
+      });
+      $("clear-hull").addEventListener("click", () => { state.circles = []; state.sel = -1; syncAll(); });
+
+      $("copy").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText($("code").value); } catch {}
+        const c = $("copied"); c.style.opacity = 1; setTimeout(() => (c.style.opacity = 0), 1200);
+      });
+      $("download-png").addEventListener("click", () => {
+        if (!state.blob) return;
+        download(state.blob, `${state.name}.png`);
+      });
+      $("download-json").addEventListener("click", () => {
+        const e = entryObject();
+        e.sprite = `${state.name}.png`; // plain filename in JSON, not the asset() call
+        const blob = new Blob([JSON.stringify({ [state.name]: e }, null, 2)], { type: "application/json" });
+        download(blob, `${state.name}.json`);
+      });
+
+      function download(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = filename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      // import a pasted entry (JSON, or the JS entry the tool emits)
+      $("import-btn").addEventListener("click", () => {
+        const raw = $("import").value.trim();
+        if (!raw) return;
+        const t = parseEntry(raw);
+        if (!t) { $("import").style.borderColor = "#c66"; return; }
+        $("import").style.borderColor = "";
+        applyEntry(t);
+      });
+
+      function parseEntry(raw) {
+        // Accept bare object, `name: { … }`, or a full JSON. Turn the JS-ish
+        // form into JSON: quote keys, strip a leading `name:` and asset(...) call.
+        let s = raw.replace(/asset\(\s*["'][^"']*["']\s*\)/g, '""');
+        const m = s.match(/\{[\s\S]*\}/);
+        if (!m) return null;
+        s = m[0];
+        s = s.replace(/([{,]\s*)([A-Za-z_]\w*)\s*:/g, '$1"$2":'); // quote keys
+        s = s.replace(/,(\s*[}\]])/g, "$1"); // drop trailing commas
+        try { return JSON.parse(s); } catch { return null; }
+      }
+
+      function applyEntry(t) {
+        if (!t.rect || !t.hull) return;
+        state.ppu = 128;
+        if (t.label) { state.label = t.label; }
+        if (t.densityRel != null) state.densityRel = t.densityRel;
+        if (t.size != null) state.size = t.size;
+        state.hullArea = t.hullArea != null ? t.hullArea : null;
+        state.inertiaFactor = t.inertiaFactor != null ? t.inertiaFactor : null;
+        state.ox = -t.rect.x0 * state.ppu;
+        state.oy = -t.rect.y0 * state.ppu;
+        state.W = Math.round((t.rect.x1 - t.rect.x0) * state.ppu);
+        state.H = Math.round((t.rect.y1 - t.rect.y0) * state.ppu);
+        state.circles = t.hull.map((c) => ({
+          cx: state.ox + c.x * state.ppu, cy: state.oy + c.y * state.ppu, r: c.r * state.ppu,
+        }));
+        state.sel = -1;
+        // no bitmap for a pasted entry: keep whatever image is loaded, or none
+        fitView();
+        syncAll();
+      }
+
+      // --- drag & drop onto the stage -----------------------------------------
+      const stage = $("stage");
+      stage.addEventListener("dragover", (e) => { e.preventDefault(); stage.classList.add("dragover"); });
+      stage.addEventListener("dragleave", () => stage.classList.remove("dragover"));
+      stage.addEventListener("drop", (e) => {
+        e.preventDefault();
+        stage.classList.remove("dragover");
+        const f = e.dataTransfer.files[0];
+        if (f && f.type.startsWith("image/")) loadBlob(f, f.name);
+      });
+
+      // --- boot ---------------------------------------------------------------
+      resize();
+      refreshFields();
+      refreshReadouts();
+      $("code").value = codeText();
+      // autoload the first catalogue entry so the editor is immediately usable
+      if (catalogueNames.length) loadExample(catalogueNames[0]);
+    </script>
+  </body>
+</html>

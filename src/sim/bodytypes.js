@@ -37,18 +37,20 @@ export const BODY_TYPES = {
   brick: {
     label: "Brick",
     sprite: asset("brick.png"),
-    rect: { x0: -1.1, y0: -0.6, x1: 1.1, y1: 0.6 },
-    // a 2 x 1 block, four overlapping circles along its length
+    rect: { x0: -1.1, y0: -0.6, x1: 1.103, y1: 0.603 },
     hull: [
-      { x: -0.75, y: 0, r: 0.5 },
-      { x: -0.25, y: 0, r: 0.5 },
-      { x: 0.25, y: 0, r: 0.5 },
-      { x: 0.75, y: 0, r: 0.5 },
+      { x: -0.809, y: -0.282, r: 0.233 },
+      { x: 0.793, y: -0.308, r: 0.225 },
+      { x: 0.801, y: 0.321, r: 0.224 },
+      { x: -0.817, y: 0.321, r: 0.215 },
+      { x: 0.002, y: 0.002, r: 0.512 },
+      { x: -0.523, y: 0.008, r: 0.505 },
+      { x: 0.506, y: 0.021, r: 0.503 },
     ],
     size: 2.5,
-    densityRel: 5, // denser than the fluid: it sinks and stays put
-    hullArea: 2.0,
-    inertiaFactor: 0.42, // (w² + h²)/12 for the 2 x 1 block
+    densityRel: 5,
+    hullArea: 2.001,
+    inertiaFactor: 0.427,
   },
 }
 

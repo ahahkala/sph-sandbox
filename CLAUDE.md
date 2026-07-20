@@ -60,7 +60,13 @@ no runtime deps. See README.md for architecture and the feature matrix.
   Sprites: transparent PNGs in assets/, generated analytically in the body's
   local frame by `tools/make-sprites.mjs` (npm run sprites; the PNGs are
   committed) so artwork lines up with the hull by construction; each renderer
-  draws one textured quad over the type's local-unit `rect`. Interaction: the
+  draws one textured quad over the type's local-unit `rect`. To author a new
+  type from an arbitrary PNG there is a standalone visual editor
+  (tools/body-editor.html, served by npm run dev): it edits the origin + hull
+  circles + rect over the sprite and emits a paste-ready `BODY_TYPES` entry
+  (hullArea = union area of the circles, inertiaFactor = area mean-square radius
+  about the origin — both computable, both overridable, which is why the shipped
+  duck keeps a hand-tuned lower inertia). Interaction: the
   `Object` dropdown sets `params.bodyType` (what Add spawns; `?obj=` presets
   it); Add/Remove are pointer tools like the obstacle Draw/Erase ones —
   `params.addBodies`/`removeBodies`/`drawObstacles`/`eraseObstacles` are

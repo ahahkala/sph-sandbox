@@ -48,6 +48,12 @@ node tools/make-sprites.mjs                     # regenerate assets/*.png (only 
 node tools/shot.mjs "?n=25000&t=1.5"            # screenshot -> shots/last.png
 ```
 
+To author a new body type from your own artwork, open
+`http://localhost:8123/tools/body-editor.html` (with `npm run dev` running):
+load a transparent PNG, drag the origin and hull circles over it, set the name
+and physics, and copy the ready-to-paste `BODY_TYPES` entry (drop the PNG in
+`assets/`). The **Rigid bodies** section below explains what the fields mean.
+
 Both suites run in headless Chrome (via `puppeteer-core`, the only dev
 dependency; the app itself has no dependencies). Test pages verify physics
 invariants: pressure repulsion, dam-break settling, energy decay, bounds,
@@ -82,6 +88,7 @@ src/
   ui/                         controls, pointer (incl. obstacle drawing), hud
 assets/                       rigid-body sprites (transparent PNGs)
 tools/                        dev server + headless validation + sprite gen
+  body-editor.html            visual hull/rect editor -> BODY_TYPES entry
 test/gpu.html                 WebGL2 physics checks
 test/webgpu.html              WebGPU physics checks
 ```
