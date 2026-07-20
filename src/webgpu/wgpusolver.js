@@ -7,7 +7,7 @@
 
 import {
   countWGSL, scanBlockWGSL, scanSerialWGSL, scanAddWGSL,
-  scatterWGSL, densityWGSL, forceWGSL, duckForceWGSL,
+  scatterWGSL, densityWGSL, forceWGSL, bodyForceWGSL,
   predictWGSL, pbfLambdaWGSL, pbfDeltaPWGSL, pbfFinalizeWGSL,
 } from "./wgsl.js";
 import { WORLD_HEIGHT as REF_WORLD_H } from "../config.js";
@@ -61,19 +61,19 @@ export class WGPUSolver {
     this.pPbfLambda = mkPipeline(pbfLambdaWGSL, "pbfLambda");
     this.pPbfDeltaP = mkPipeline(pbfDeltaPWGSL, "pbfDeltaP");
     this.pPbfFinalize = mkPipeline(pbfFinalizeWGSL, "pbfFinalize");
-    this.pDuckForce = mkPipeline(duckForceWGSL, "duckForce");
+    this.pBodyForce = mkPipeline(bodyForceWGSL, "bodyForce");
 
-    // duck reaction-force reduction: fixed-point atomic sums, read back
-    // asynchronously (sampleDuckForce returns the latest resolved value)
-    this.duckData = new Float32Array(36); // struct DuckParams (144 bytes)
-    this.duckU = device.createBuffer({
-      size: this.duckData.byteLength,
+    // body reaction-force reduction: fixed-point atomic sums, read back
+    // asynchronously (sampleBodyForce returns the latest resolved value)
+    this.bodyData = new Float32Array(36); // struct BodyParams (144 bytes)
+    this.bodyU = device.createBuffer({
+      size: this.bodyData.byteLength,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    // one slot per duck: each needs its own accumulator + staging buffer so
+    // one slot per body: each needs its own accumulator + staging buffer so
     // the in-flight readbacks don't collide
-    this.duckSlots = [];
-    this.duckForce = { fx: 0, fy: 0, torque: 0 }; // slot 0, for tests/compat
+    this.bodySlots = [];
+    this.bodyForce = { fx: 0, fy: 0, torque: 0 }; // slot 0, for tests/compat
 
     this.count = 0;
     this.cur = 0;
@@ -110,7 +110,7 @@ export class WGPUSolver {
     this.lambdaBuf = mk(n * 8);    // PBF (lambda, rho)
     this.gridDirty = true;
     this.bindGroups = null;
-    for (const s of this.duckSlots) s.binds = null; // reference the old posVel
+    for (const s of this.bodySlots) s.binds = null; // reference the old posVel
   }
 
   resizeGrid() {
@@ -175,11 +175,11 @@ export class WGPUSolver {
     d[5] = this.world.h;
     d[6] = this.gridCols;
     d[7] = this.gridRows;
-    const ob = p.duckCircles.length
-      ? p.obstacles.concat(p.duckCircles)
+    const ob = p.bodyCircles.length
+      ? p.obstacles.concat(p.bodyCircles)
       : p.obstacles;
     d[8] = this.count;
-    d[9] = ob.length; // drawn obstacles + duck hull circles
+    d[9] = ob.length; // drawn obstacles + body hull circles
     d[10] = this.h;        // cellSize
     d[11] = this.h;
     d[12] = this.h * this.h;
@@ -325,10 +325,10 @@ export class WGPUSolver {
     this.cur = 1 - this.cur;
   }
 
-  duckSlot(i) {
-    if (!this.duckSlots[i]) {
+  bodySlot(i) {
+    if (!this.bodySlots[i]) {
       const dev = this.device;
-      this.duckSlots[i] = {
+      this.bodySlots[i] = {
         out: dev.createBuffer({
           size: 16,
           usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
@@ -342,23 +342,23 @@ export class WGPUSolver {
         force: { fx: 0, fy: 0, torque: 0 },
       };
     }
-    return this.duckSlots[i];
+    return this.bodySlots[i];
   }
 
-  // Latest resolved reaction force for duck `i` (zero until the first
+  // Latest resolved reaction force for body `i` (zero until the first
   // readback lands).
-  duckForceAt(i) {
-    return this.duckSlots[i] ? this.duckSlots[i].force : { fx: 0, fy: 0, torque: 0 };
+  bodyForceAt(i) {
+    return this.bodySlots[i] ? this.bodySlots[i].force : { fx: 0, fy: 0, torque: 0 };
   }
 
-  // Sum the fluid's reaction to one duck hull's boundary springs. The
+  // Sum the fluid's reaction to one body hull's boundary springs. The
   // readback is async: returns the most recently resolved value (a frame or
   // two stale), never stalls the pipeline. Uses P from the last substep.
-  sampleDuckForce(circles, cx, cy, slotIndex = 0) {
+  sampleBodyForce(circles, cx, cy, slotIndex = 0) {
     const dev = this.device;
-    const slot = this.duckSlot(slotIndex);
+    const slot = this.bodySlot(slotIndex);
     const FIX = 32; // fixed-point units per force unit
-    const d = this.duckData;
+    const d = this.bodyData;
     d.fill(0);
     d[0] = cx;
     d[1] = cy;
@@ -370,15 +370,15 @@ export class WGPUSolver {
       d[6 + k * 4] = circles[k].r;
     }
     // the uniform is shared across slots: writes and submits execute in
-    // queue order, so each dispatch still sees its own duck's data
-    dev.queue.writeBuffer(this.duckU, 0, d);
+    // queue order, so each dispatch still sees its own body's data
+    dev.queue.writeBuffer(this.bodyU, 0, d);
     if (!slot.binds) {
       slot.binds = [0, 1].map((cur) => dev.createBindGroup({
-        layout: this.pDuckForce.getBindGroupLayout(0),
+        layout: this.pBodyForce.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: this.paramsBuf } },
           { binding: 1, resource: { buffer: this.posVel[cur] } },
-          { binding: 2, resource: { buffer: this.duckU } },
+          { binding: 2, resource: { buffer: this.bodyU } },
           { binding: 3, resource: { buffer: slot.out } },
         ],
       }));
@@ -386,7 +386,7 @@ export class WGPUSolver {
     const enc = dev.createCommandEncoder();
     enc.clearBuffer(slot.out);
     const pass = enc.beginComputePass();
-    pass.setPipeline(this.pDuckForce);
+    pass.setPipeline(this.pBodyForce);
     pass.setBindGroup(0, slot.binds[this.cur]);
     pass.dispatchWorkgroups(Math.ceil(this.count / WG));
     pass.end();
@@ -396,16 +396,16 @@ export class WGPUSolver {
     if (read) {
       slot.pending = true;
       // exposed so the ?t= fast-forward loop can await the fresh value
-      this.duckReadPromise = slot.staging.mapAsync(GPUMapMode.READ).then(() => {
+      this.bodyReadPromise = slot.staging.mapAsync(GPUMapMode.READ).then(() => {
         const a = new Int32Array(slot.staging.getMappedRange().slice(0));
         // PBF applies the boundary nudge once per constraint iteration —
-        // mirror that in the reaction (see the WebGL2 sampleDuckForce)
+        // mirror that in the reaction (see the WebGL2 sampleBodyForce)
         const p = this.params;
         const iters = p.physics === "pbf"
           ? Math.max(1, Math.round(p.pbfIterations) | 1) : 1;
         const s = iters / FIX;
         slot.force = { fx: a[0] * s, fy: a[1] * s, torque: a[2] * s };
-        if (slotIndex === 0) this.duckForce = slot.force; // tests read this
+        if (slotIndex === 0) this.bodyForce = slot.force; // tests read this
         slot.staging.unmap();
         slot.pending = false;
       }).catch(() => { slot.pending = false; });

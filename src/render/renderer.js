@@ -10,10 +10,10 @@
 import { createProgram, getUniforms, createTarget, deleteTarget, ObstacleTexture } from "./glutils.js";
 import {
   particleVS, dotsFS, fieldFS, compositeVS, compositeFS, obstacleFS,
-  duckVS, duckFS,
+  bodySpriteVS, bodySpriteFS,
 } from "./shaders.js";
 import { TEX_WIDTH } from "../config.js";
-import { DUCK_MESH, DUCK_STRIDE } from "../sim/duck.js";
+import { BODY_TYPES, bodyType } from "../sim/bodytypes.js";
 
 const FIELD_SCALE = 0.5;  // field texture resolution relative to canvas
 
@@ -38,20 +38,9 @@ export class Renderer {
     this.progObstacle = createProgram(gl, compositeVS, obstacleFS);
     this.uObstacle = getUniforms(gl, this.progObstacle);
     this.obstacleTex = new ObstacleTexture(gl);
-    this.progDuck = createProgram(gl, duckVS, duckFS);
-    this.uDuck = getUniforms(gl, this.progDuck);
-
-    // duck mesh VAO (static local-space triangles; transform is a uniform)
-    this.duckVAO = gl.createVertexArray();
-    gl.bindVertexArray(this.duckVAO);
-    this.duckVBO = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.duckVBO);
-    gl.bufferData(gl.ARRAY_BUFFER, DUCK_MESH, gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, DUCK_STRIDE * 4, 0);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, DUCK_STRIDE * 4, 8);
-    gl.bindVertexArray(null);
+    this.progBody = createProgram(gl, bodySpriteVS, bodySpriteFS);
+    this.uBody = getUniforms(gl, this.progBody);
+    this.sprites = loadSprites(gl);
 
     // one VAO with the fullscreen quad, one empty VAO for attribute-less
     // particle draws (gl_VertexID) — leaving quad attributes enabled would
@@ -96,7 +85,7 @@ export class Renderer {
       this.renderDots(posVelTex, count, world);
       this.renderObstacles(world);
     }
-    this.renderDuck(world);
+    this.renderBodies(world);
   }
 
   setParticleUniforms(u, posVelTex, world, pointSize) {
@@ -190,20 +179,54 @@ export class Renderer {
     gl.disable(gl.BLEND);
   }
 
-  renderDuck(world) {
-    const poses = this.params.duckPoses;
+  renderBodies(world) {
+    const poses = this.params.bodyPoses;
     if (poses.length === 0) return;
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.useProgram(this.progDuck);
-    gl.uniform2f(this.uDuck.uWorld, world.w, world.h);
-    gl.bindVertexArray(this.duckVAO);
+    gl.useProgram(this.progBody);
+    gl.uniform2f(this.uBody.uWorld, world.w, world.h);
+    gl.uniform1i(this.uBody.uSprite, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bindVertexArray(this.emptyVAO);
     for (const pose of poses) {
-      gl.uniform4f(this.uDuck.uPose, pose.x, pose.y, Math.cos(pose.angle), Math.sin(pose.angle));
-      gl.uniform1f(this.uDuck.uScale, pose.scale);
-      gl.drawArrays(gl.TRIANGLES, 0, DUCK_MESH.length / DUCK_STRIDE);
+      const sprite = this.sprites[pose.type];
+      if (!sprite || !sprite.ready) continue; // image still loading
+      const r = bodyType(pose.type).rect;
+      gl.bindTexture(gl.TEXTURE_2D, sprite.tex);
+      gl.uniform4f(this.uBody.uPose, pose.x, pose.y, Math.cos(pose.angle), Math.sin(pose.angle));
+      gl.uniform1f(this.uBody.uScale, pose.scale);
+      gl.uniform4f(this.uBody.uRect, r.x0, r.y0, r.x1, r.y1);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
     gl.bindVertexArray(null);
+    gl.disable(gl.BLEND);
   }
+}
+
+// One texture per body type. The PNGs load asynchronously; a body whose
+// sprite hasn't arrived yet is simply skipped for a frame or two.
+function loadSprites(gl) {
+  const out = {};
+  for (const [name, type] of Object.entries(BODY_TYPES)) {
+    const tex = gl.createTexture();
+    const slot = { tex, ready: false };
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const img = new Image();
+    img.onload = () => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      slot.ready = true;
+    };
+    img.src = type.sprite;
+    out[name] = slot;
+  }
+  return out;
 }

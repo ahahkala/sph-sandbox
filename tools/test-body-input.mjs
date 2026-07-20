@@ -1,8 +1,9 @@
-// Headless check for duck interaction wiring (middle-click spawn/remove,
-// keyboard thrust, drag). Live rAF physics doesn't advance reliably headless
+// Headless check for rigid-body interaction wiring (the Add/Remove/Clear
+// tools, the object dropdown, keyboard thrust, drag) plus body-body contact.
+// Live rAF physics doesn't advance reliably headless
 // (see CLAUDE.md), so real keyboard/mouse events verify the input plumbing and
-// duck.step is driven directly for dynamics.
-// Run: node tools/test-duck-input.mjs
+// body.step is driven directly for dynamics.
+// Run: node tools/test-body-input.mjs
 import puppeteer from "puppeteer-core";
 import { chromePath, ensureServer, BASE } from "./chrome.mjs";
 
@@ -24,42 +25,43 @@ try {
   await tab.goto(BASE + "/?n=25000&duck=1&t=6", { waitUntil: "load", timeout: 120000 });
   await tab.waitForFunction(() => (window.__frames || 0) >= 10, { timeout: 300000, polling: 200 });
 
-  const duckState = () => tab.evaluate(() => {
-    const f = window.__ducks;
-    const d = f.ducks[0];
+  const bodyState = () => tab.evaluate(() => {
+    const f = window.__bodies;
+    const d = f.bodies[0];
     return {
-      n: f.ducks.length,
+      n: f.bodies.length,
       pose: d ? { ...d.pose } : null,
       grab: d && d.grab ? { tx: d.grab.tx } : null,
-      circles: window.__params.duckCircles.length,
-      poses: window.__params.duckPoses.length,
+      circles: window.__params.bodyCircles.length,
+      poses: window.__params.bodyPoses.length,
     };
   });
 
-  let st = await duckState();
+  let st = await bodyState();
   check("?duck=1 spawns one duck", st.n === 1 && st.poses === 1, `n ${st.n}`);
   check("hull circles published to params", st.circles === 3, `${st.circles} circles`);
+  check("the pose carries its body type", st.pose.type === "duck", String(st.pose?.type));
 
-  // --- keyboard wiring: real key events set/clear params.duckThrust -------
+  // --- keyboard wiring: real key events set/clear params.bodyThrust -------
   await tab.keyboard.down("ArrowUp");
   await tab.keyboard.down("ArrowRight");
-  let th = await tab.evaluate(() => ({ ...window.__params.duckThrust }));
+  let th = await tab.evaluate(() => ({ ...window.__params.bodyThrust }));
   check("arrows set thrust", th.x === 1 && th.y === -1, JSON.stringify(th));
   await tab.keyboard.up("ArrowUp");
   await tab.keyboard.up("ArrowRight");
-  th = await tab.evaluate(() => ({ ...window.__params.duckThrust }));
+  th = await tab.evaluate(() => ({ ...window.__params.bodyThrust }));
   check("keyup clears thrust", th.x === 0 && th.y === 0, JSON.stringify(th));
 
-  // --- thrust dynamics: drive duck.step directly with gravity off ---------
+  // --- thrust dynamics: drive body.step directly with gravity off ---------
   const dvy = await tab.evaluate(() => {
-    const d = window.__ducks.ducks[0], p = window.__params;
+    const d = window.__bodies.bodies[0], p = window.__params;
     const world = { w: d.pose.x * 2, h: d.pose.y * 2 }; // roomy box
     const g0 = p.gravity;
     p.gravity = 0;
-    p.duckThrust.y = -1;
+    p.bodyThrust.y = -1;
     const vy0 = d.vy;
     for (let i = 0; i < 30; i++) d.step(1 / 60, world, null);
-    p.duckThrust.y = 0;
+    p.bodyThrust.y = 0;
     p.gravity = g0;
     return d.vy - vy0;
   });
@@ -74,19 +76,19 @@ try {
   const ww = wh * (dims.cw / dims.ch);
   const toScreen = (p) => ({ x: (p.x / ww) * dims.cw, y: (p.y / wh) * dims.ch });
 
-  st = await duckState();
+  st = await bodyState();
   let s = toScreen(st.pose);
   await tab.mouse.move(s.x, s.y);
   await tab.mouse.down();
-  let grab = (await duckState()).grab;
+  let grab = (await bodyState()).grab;
   check("mousedown on duck grabs it", !!grab, JSON.stringify(grab));
   await tab.mouse.move(s.x + 150, s.y - 60);
-  const grab2 = (await duckState()).grab;
+  const grab2 = (await bodyState()).grab;
   check("mousemove updates grab target", grab2 && grab2.tx > grab.tx,
     `tx ${grab?.tx?.toFixed(1)} -> ${grab2?.tx?.toFixed(1)}`);
   // grabbed drag spring pulls the duck toward the cursor when stepped
   const dvx = await tab.evaluate(() => {
-    const d = window.__ducks.ducks[0];
+    const d = window.__bodies.bodies[0];
     const world = { w: d.pose.x * 4, h: d.pose.y * 4 };
     const vx0 = d.vx;
     for (let i = 0; i < 10; i++) d.step(1 / 60, world, null);
@@ -94,28 +96,28 @@ try {
   });
   check("drag spring pulls duck toward cursor", dvx > 0.5, `dvx ${dvx.toFixed(2)}`);
   await tab.mouse.up();
-  check("mouseup releases the grab", (await duckState()).grab === null);
+  check("mouseup releases the grab", (await bodyState()).grab === null);
 
   // pointer down away from the duck should still push fluid, not grab
   await tab.mouse.move(s.x - 300, s.y - 300);
   await tab.mouse.down();
-  check("mousedown off-duck doesn't grab", (await duckState()).grab === null);
+  check("mousedown off-duck doesn't grab", (await bodyState()).grab === null);
   await tab.mouse.up();
 
   // --- Add tool: a click spawns a duck at the cursor ----------------------
-  // paused, so the ducks stay where they were clicked while we test the tools
+  // paused, so the bodies stay where they were clicked while we test the tools
   await tab.keyboard.press("Space");
   const tools = () => tab.evaluate(() => {
     const p = window.__params;
     return {
-      addDucks: p.addDucks, removeDucks: p.removeDucks,
+      addBodies: p.addBodies, removeBodies: p.removeBodies,
       drawObstacles: p.drawObstacles, eraseObstacles: p.eraseObstacles,
     };
   });
-  await tab.click("#duck-add");
+  await tab.click("#body-add");
   let t = await tools();
   check("Add activates only the add tool",
-    Object.entries(t).every(([k, v]) => v === (k === "addDucks")), JSON.stringify(t));
+    Object.entries(t).every(([k, v]) => v === (k === "addBodies")), JSON.stringify(t));
 
   // the duck has drifted with the flow, so keep every click on open canvas:
   // clear of the control panel on the left and the hint line at the bottom
@@ -125,10 +127,10 @@ try {
   });
   const p1 = spot(s.x - 300, s.y - 200);
   await tab.mouse.click(p1.x, p1.y);
-  st = await duckState();
+  st = await bodyState();
   check("click with Add spawns a duck",
     st.n === 2 && st.circles === 6 && st.poses === 2, `n ${st.n}`);
-  const spawned = await tab.evaluate(() => ({ ...window.__ducks.ducks[1].pose }));
+  const spawned = await tab.evaluate(() => ({ ...window.__bodies.bodies[1].pose }));
   const want = { x: (p1.x / dims.cw) * ww, y: (p1.y / dims.ch) * wh };
   check("spawns at the cursor",
     Math.hypot(spawned.x - want.x, spawned.y - want.y) < 1,
@@ -141,34 +143,34 @@ try {
   await tab.mouse.move(p2.x + 60, p2.y + 40);
   await tab.mouse.move(p2.x + 120, p2.y + 80);
   await tab.mouse.up();
-  st = await duckState();
+  st = await bodyState();
   check("dragging with Add spawns only one duck", st.n === 3, `n ${st.n}`);
 
   // --- Remove tool: a click deletes the duck under the cursor -------------
-  await tab.click("#duck-remove");
+  await tab.click("#body-remove");
   t = await tools();
   check("Remove replaces Add as the active tool",
-    t.removeDucks && !t.addDucks, JSON.stringify(t));
+    t.removeBodies && !t.addBodies, JSON.stringify(t));
   await tab.mouse.click(p1.x, p1.y);
-  st = await duckState();
+  st = await bodyState();
   check("click with Remove deletes that duck", st.n === 2 && st.poses === 2, `n ${st.n}`);
   await tab.mouse.click(dims.cw - 20, 20); // top-right: no duck there
-  check("click with Remove on empty water is a no-op", (await duckState()).n === 2);
+  check("click with Remove on empty water is a no-op", (await bodyState()).n === 2);
 
-  // --- tools stay mutually exclusive, and Clear drops all the ducks -------
+  // --- tools stay mutually exclusive, and Clear drops all the bodies -------
   await tab.click("#obstacle-draw");
   t = await tools();
   check("obstacle Draw turns the duck tool off",
-    t.drawObstacles && !t.removeDucks, JSON.stringify(t));
-  await tab.click("#duck-clear");
-  st = await duckState();
+    t.drawObstacles && !t.removeBodies, JSON.stringify(t));
+  await tab.click("#body-clear");
+  st = await bodyState();
   check("Clear removes every duck and its published hull",
     st.n === 0 && st.circles === 0 && st.poses === 0,
     `n ${st.n}, ${st.circles} circles`);
 
   // --- duck-duck collision: drive the flock directly, gravity off ---------
   const coll = await tab.evaluate(() => {
-    const f = window.__ducks, p = window.__params;
+    const f = window.__bodies, p = window.__params;
     const world = { w: 200, h: 200 };
     const g0 = p.gravity;
     p.gravity = 0;
@@ -197,6 +199,26 @@ try {
   check("contact conserves momentum",
     Math.abs(coll.p_x) < 1e-6 * Math.max(1, Math.abs(coll.avx)), `p ${coll.p_x.toExponential(1)}`);
   check("separated ducks don't interact", coll.drift < 1e-9, `drift ${coll.drift.toExponential(1)}`);
+
+  // --- object dropdown: the Add tool spawns the picked type ---------------
+  await tab.select("#body-type", "brick");
+  check("dropdown sets the spawn type",
+    (await tab.evaluate(() => window.__params.bodyType)) === "brick");
+  await tab.click("#body-add");
+  const p3 = spot(dims.cw * 0.6, dims.ch * 0.4);
+  await tab.mouse.click(p3.x, p3.y);
+  const brick = await tab.evaluate(() => {
+    const b = window.__bodies.bodies[0];
+    const world = { w: 200, h: 200 };
+    const duck = window.__bodies.spawn(world, 20, 20, "duck");
+    const both = { brick: b.mass / b.pose.scale ** 2, duck: duck.mass / duck.pose.scale ** 2 };
+    window.__bodies.clear();
+    return { n: 1, type: b.pose.type, circles: b.circles.length, ...both };
+  });
+  check("click with Add spawns the picked type",
+    brick.type === "brick" && brick.circles === 4, `${brick.type}, ${brick.circles} circles`);
+  check("a brick is denser than a duck", brick.brick > brick.duck * 1.5,
+    `${brick.brick.toFixed(2)} vs ${brick.duck.toFixed(2)} per unit²`);
 } finally {
   await browser.close();
 }

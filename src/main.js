@@ -6,7 +6,8 @@
 import { createParams, WORLD_HEIGHT, REF_COUNT } from "./config.js";
 import { GPUSolver } from "./sim/gpu/gpusolver.js";
 import { spawners } from "./sim/spawn.js";
-import { DuckFlock } from "./sim/duck.js";
+import { BodyFlock } from "./sim/body.js";
+import { BODY_TYPES } from "./sim/bodytypes.js";
 import { Renderer } from "./render/renderer.js";
 import { setupControls } from "./ui/controls.js";
 import { setupPointer } from "./ui/pointer.js";
@@ -61,10 +62,10 @@ function run(solver, renderer) {
 
   let paused = false;
 
-  // rubber ducks (middle-click to spawn/remove): hull circles couple into the
-  // solvers' obstacle path, the fluid reaction is sampled from the GPU once
-  // per duck per frame
-  const ducks = new DuckFlock(params);
+  // rigid bodies (ducks, bricks — see sim/bodytypes.js): hull circles couple
+  // into the solvers' obstacle path, the fluid reaction is sampled from the
+  // GPU once per body per frame
+  const bodies = new BodyFlock(params);
 
   function respawn(presetName) {
     const spawn = spawners[presetName] || spawners.damBreak;
@@ -85,7 +86,7 @@ function run(solver, renderer) {
     onRestart: (preset) => respawn(preset),
     onCountChange: () => {
       params.obstacles.length = 0; // world rescales; stored positions invalid
-      ducks.clear();
+      bodies.clear();
       resize();
       solver.alloc(params.count);
       respawn(controls.currentPreset());
@@ -94,9 +95,9 @@ function run(solver, renderer) {
       hud.setCount(solver.count, backend, params.physics);
     },
     onPauseToggle: () => (paused = !paused),
-    onDucksClear: () => ducks.clear(),
+    onBodiesClear: () => bodies.clear(),
   });
-  setupPointer(canvas, solver, params, ducks, world);
+  setupPointer(canvas, solver, params, bodies, world);
 
   // scene/physics/count/mode/gravity/etc. are already restored from
   // the URL inside setupControls; ?t= (fast-forward) and ?ob= (obstacles,
@@ -116,12 +117,17 @@ function run(solver, renderer) {
     }
   }
 
-  // ?duck=n spawns n ducks up front (middle-click does it interactively);
-  // handy for screenshots and the headless tools
-  const duckCount = parseInt(query.get("duck") || "0", 10);
-  for (let i = 0; i < duckCount; i++) {
-    ducks.spawn(world, (world.w * (i + 1)) / (duckCount + 1), world.h * 0.25);
+  // Rigid bodies up front (they are otherwise added with the Add tool):
+  // ?duck=3 or ?brick=2, one query parameter per body type, spread evenly
+  // across the world. Handy for screenshots and the headless tools.
+  const upfront = [];
+  for (const type of Object.keys(BODY_TYPES)) {
+    const n = parseInt(query.get(type) || "0", 10);
+    for (let i = 0; i < n; i++) upfront.push(type);
   }
+  upfront.forEach((type, i) => {
+    bodies.spawn(world, (world.w * (i + 1)) / (upfront.length + 1), world.h * 0.25, type);
+  });
 
   // ?t= is wall-clock viewing seconds: scaled like the live loop so the
   // same t shows the same stage of the flow at every count
@@ -131,21 +137,21 @@ function run(solver, renderer) {
     const simSeconds = fastForward * (world.h / WORLD_HEIGHT);
     const steps = Math.min(Math.round(simSeconds / params.dt), 20000);
     for (let i = 0; i < steps; i++) {
-      if (ducks.ducks.length > 0) {
+      if (bodies.bodies.length > 0) {
         // resample sparsely: WebGL2 reads back synchronously, and on
         // WebGPU the async readback must be awaited (the render loop
         // isn't turning, so a stale value would never resolve)
         if (i % 8 === 0) {
-          for (let k = 0; k < ducks.ducks.length; k++) {
-            const d = ducks.ducks[k];
-            d.fluidForce = solver.sampleDuckForce(d.circles, d.pose.x, d.pose.y, k);
-            if (solver.duckReadPromise) {
-              await solver.duckReadPromise;
-              d.fluidForce = solver.duckForceAt(k);
+          for (let k = 0; k < bodies.bodies.length; k++) {
+            const d = bodies.bodies[k];
+            d.fluidForce = solver.sampleBodyForce(d.circles, d.pose.x, d.pose.y, k);
+            if (solver.bodyReadPromise) {
+              await solver.bodyReadPromise;
+              d.fluidForce = solver.bodyForceAt(k);
             }
           }
         }
-        ducks.step(params.dt, world);
+        bodies.step(params.dt, world);
       }
       solver.step(params.dt);
     }
@@ -168,7 +174,7 @@ function run(solver, renderer) {
       const t0 = performance.now();
       let steps = 0;
       while (accumulator >= params.dt && steps < params.maxSubsteps) {
-        ducks.step(params.dt, world);
+        bodies.step(params.dt, world);
         solver.step(params.dt);
         accumulator -= params.dt;
         steps++;
@@ -176,7 +182,7 @@ function run(solver, renderer) {
       if (steps === params.maxSubsteps) accumulator = 0; // can't keep up: drop time
       // one reduction + readback per frame; the force is held constant
       // across next frame's substeps (sync on WebGL2, async on WebGPU)
-      if (steps > 0) ducks.sampleForces(solver);
+      if (steps > 0) bodies.sampleForces(solver);
       simMs = performance.now() - t0;
     }
 
@@ -184,7 +190,7 @@ function run(solver, renderer) {
     hud.frame(simMs);
     window.__frames = (window.__frames || 0) + 1; // headless tooling waits on this
     window.__params = params;                     // headless tooling inspects these
-    window.__ducks = ducks;                       // (tools/test-duck-input.mjs)
+    window.__bodies = bodies;                       // (tools/test-body-input.mjs)
     requestAnimationFrame(frame);
   }
   fastForwardSim().then(() => {

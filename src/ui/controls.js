@@ -1,8 +1,9 @@
 // Wires the control panel to the live params object and app callbacks.
 // callbacks: { backend, maxCount, onRestart(preset), onCountChange(),
-//              onPhysicsChange(), onPauseToggle(), onDucksClear() }
+//              onPhysicsChange(), onPauseToggle(), onBodiesClear() }
 
 import { DT_FORCE, DT_PBF } from "../config.js";
+import { BODY_TYPES } from "../sim/bodytypes.js";
 
 export const COUNTS = [
   1000, 3000, 6000, 12000, 25000, 50000, 100000, 175000, 262144,
@@ -42,6 +43,7 @@ export function setupControls(params, callbacks) {
     q.set("vorticity", params.vorticity);
     q.set("pointer", params.pointerStrength);
     q.set("obstsize", params.obstacleRadius);
+    q.set("obj", params.bodyType);
     q.set("paused", pauseBtn.classList.contains("active") ? "1" : "0");
     return q;
   }
@@ -169,14 +171,26 @@ export function setupControls(params, callbacks) {
   modeButtons.dots.addEventListener("click", () => setMode("dots"));
   setMode(params.renderMode);
 
-  // pointer tools: obstacle draw/erase and duck add/remove. Toggling one on
+  // which rigid body the Add tool spawns (Remove takes whatever is under the
+  // cursor, whatever type it is)
+  const bodyTypeEl = $("body-type");
+  for (const [name, type] of Object.entries(BODY_TYPES)) {
+    bodyTypeEl.add(new Option(type.label, name));
+  }
+  if (query.has("obj") && BODY_TYPES[query.get("obj")]) params.bodyType = query.get("obj");
+  bodyTypeEl.value = params.bodyType;
+  bodyTypeEl.addEventListener("change", () => {
+    params.bodyType = bodyTypeEl.value;
+  });
+
+  // pointer tools: obstacle draw/erase and object add/remove. Toggling one on
   // turns the others off, so the pointer always has a single meaning; with
   // none active the pointer pushes and pulls fluid.
   const tools = {
     drawObstacles: $("obstacle-draw"),
     eraseObstacles: $("obstacle-erase"),
-    addDucks: $("duck-add"),
-    removeDucks: $("duck-remove"),
+    addBodies: $("body-add"),
+    removeBodies: $("body-remove"),
   };
   const drawBtn = tools.drawObstacles;
   const eraseBtn = tools.eraseObstacles;
@@ -199,7 +213,7 @@ export function setupControls(params, callbacks) {
   $("obstacle-clear").addEventListener("click", () => {
     params.obstacles.length = 0;
   });
-  $("duck-clear").addEventListener("click", () => callbacks.onDucksClear());
+  $("body-clear").addEventListener("click", () => callbacks.onBodiesClear());
   syncTools();
 
   // scene preset
@@ -224,17 +238,17 @@ export function setupControls(params, callbacks) {
     location.href = location.pathname;
   });
 
-  // arrow keys apply a steering force to every duck while held
+  // arrow keys apply a steering force to every rigid body while held
   const arrows = {
     ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
   };
   const held = new Set();
   const syncThrust = () => {
-    params.duckThrust.x = 0;
-    params.duckThrust.y = 0;
+    params.bodyThrust.x = 0;
+    params.bodyThrust.y = 0;
     for (const code of held) {
-      params.duckThrust.x += arrows[code][0];
-      params.duckThrust.y += arrows[code][1];
+      params.bodyThrust.x += arrows[code][0];
+      params.bodyThrust.y += arrows[code][1];
     }
   };
 

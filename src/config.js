@@ -1,6 +1,8 @@
 // Central tunables. `params` is mutated live by the UI; solvers read it
 // every step, so slider changes take effect immediately.
 
+import { DEFAULT_BODY_TYPE } from "./sim/bodytypes.js"
+
 // Reference world height (world units) at the reference particle count.
 // The world grows with sqrt(count / REF_COUNT) and gravity shrinks by the
 // same factor, so dynamics and stability are identical at every count.
@@ -54,15 +56,15 @@ export function createParams() {
     // pointer tools; at most one is active at a time (see setupControls)
     drawObstacles: false,
     eraseObstacles: false, // eraser tool: drag removes obstacles near the cursor
-    addDucks: false, // click spawns a duck at the cursor
-    removeDucks: false, // click removes the duck under the cursor
+    addBodies: false, // click spawns a rigid body at the cursor
+    removeBodies: false, // click removes the body under the cursor
     obstacleRadius: 3, // drawn wall stamp radius, world units at the reference world size
     obstacles: [], // {x, y, r} in world units
-    // rubber ducks: middle-click spawns one at the cursor, middle-click on a
-    // duck removes it (see DuckFlock)
-    duckCircles: [], // hull circles {x, y, r} of all ducks, appended to obstacles by the solvers
-    duckPoses: [], // {x, y, angle, scale} per duck, for the renderers
-    duckThrust: { x: 0, y: 0 }, // arrow-key force direction on the ducks (unit-ish)
+    // rigid bodies (ducks, bricks, … — see sim/bodytypes.js), owned by BodyFlock
+    bodyType: DEFAULT_BODY_TYPE, // what the Add tool spawns
+    bodyCircles: [], // hull circles {x, y, r} of all bodies, appended to obstacles by the solvers
+    bodyPoses: [], // {x, y, angle, scale, type} per body, for the renderers
+    bodyThrust: { x: 0, y: 0 }, // arrow-key force direction on the bodies (unit-ish)
 
     // rendering
     renderMode: "liquid", // "liquid" | "dots"

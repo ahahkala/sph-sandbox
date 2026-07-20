@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "node tools/serve.mjs",
     "test": "node tools/test-headless.mjs test/gpu.html",
+    "sprites": "node tools/make-sprites.mjs",
     "shot": "node tools/shot.mjs"
   },
   "devDependencies": {

@@ -5,7 +5,8 @@ browser. All physics runs on the GPU:
 
 - **WebGL2 backend** (default) — fragment-shader SPH up to 262k particles,
   with two physics modes (force SPH and PBF), vorticity confinement,
-  drawable obstacles, and rigid-body rubber ducks floating on the fluid.
+  drawable obstacles, and rigid bodies (floating rubber ducks, sinking
+  bricks) coupled two-way to the fluid.
 - **WebGPU backend** (`?backend=webgpu`) — compute-shader SPH with an exact
   neighbor grid (atomic counting sort + prefix sum), up to **1M+ particles**.
 
@@ -17,12 +18,13 @@ ES modules can't load over `file://`, so serve the directory:
 npm run dev        # static server -> http://localhost:8123
 ```
 
-Controls: drag to push fluid, right-drag to pull. A drag starting on a duck
-grabs it (release mid-swing to throw), and the arrow keys steer every duck.
-The panel's `Ducks` row holds three tools mirroring the obstacle ones: `Add`
-(click to spawn a duck at the cursor), `Remove` (click a duck to delete it)
-and `Clear` (drop them all). At most one pointer tool — duck or obstacle — is
-active at a time; with none active the pointer moves fluid.
+Controls: drag to push fluid, right-drag to pull. A drag starting on a rigid
+body grabs it (release mid-swing to throw), and the arrow keys steer every
+body. The panel's `Object` dropdown picks the type (duck, brick, …) and the
+`Objects` row holds three tools mirroring the obstacle ones: `Add` (click to
+spawn the picked object at the cursor), `Remove` (click an object to delete
+it) and `Clear` (drop them all). At most one pointer tool — object or
+obstacle — is active at a time; with none active the pointer moves fluid.
 `o` toggles obstacle drawing (drag stamps circular walls, right-drag
 erases), `e` toggles the eraser (drag removes walls near the cursor),
 `space` pause, `r` restart. `Restart` re-seeds the current scene and keeps
@@ -32,15 +34,17 @@ query string (it reloads the bare page).
 URL parameters for reproducible states:
 `?backend=webgpu&scene=drop&mode=dots&phys=pbf&n=100000&t=3&ob=0.5,0.8,0.06`
 — `t` fast-forwards the sim synchronously; `ob` places obstacles as
-`x,y,r` fractions of world size (`;`-separated); `duck=n` spawns n ducks up
-front (they are otherwise added interactively).
+`x,y,r` fractions of world size (`;`-separated); one parameter per body type
+spawns bodies up front (`duck=n`, `brick=n`; they are otherwise added
+interactively) and `obj=brick` presets the Add dropdown.
 
 ## Test / validate
 
 ```
 npm test                                        # WebGL2 physics suite
 node tools/test-headless.mjs test/webgpu.html   # WebGPU physics suite
-node tools/test-duck-input.mjs                  # duck spawn/keyboard/drag wiring
+node tools/test-body-input.mjs                  # body spawn/keyboard/drag/collision wiring
+node tools/make-sprites.mjs                     # regenerate assets/*.png (only if shapes change)
 node tools/shot.mjs "?n=25000&t=1.5"            # screenshot -> shots/last.png
 ```
 
@@ -60,7 +64,8 @@ src/
   config.js                   all tunables + shared constants
   sim/
     spawn.js                  initial conditions: damBreak, doubleDam, drop, sphere
-    duck.js                   rubber duck: polygon mesh + rigid-body dynamics
+    body.js                   rigid bodies: dynamics, flock, body-body contact
+    bodytypes.js              catalogue (hull, sprite, density) per body type
     gpu/                      WebGL2 solver
       gpusolver.js            pipeline orchestration (force + PBF modes)
       shaders.js              force SPH: scatter, density+curl MRT, force
@@ -75,7 +80,8 @@ src/
     shaders.js                GLSL: splat, composite, obstacles
     glutils.js                program/texture/target helpers
   ui/                         controls, pointer (incl. obstacle drawing), hud
-tools/                        dev server + headless validation scripts
+assets/                       rigid-body sprites (transparent PNGs)
+tools/                        dev server + headless validation + sprite gen
 test/gpu.html                 WebGL2 physics checks
 test/webgpu.html              WebGPU physics checks
 ```
@@ -88,7 +94,7 @@ test/webgpu.html              WebGPU physics checks
 | PBF (position-based)   | ✓      | ✓      |
 | Vorticity confinement  | ✓      | ✓      |
 | Obstacles              | ✓      | ✓      |
-| Rubber ducks (rigid bodies) | ✓ | ✓      |
+| Rigid bodies (ducks, bricks) | ✓ | ✓     |
 | Max particles          | 262144 | 1048576 |
 | Neighbor grid          | 8 slots/cell (stencil routing) | exact (counting sort) |
 
@@ -121,25 +127,28 @@ a growable storage buffer on WebGPU) evaluated analytically in the collision
 step and drawn as an SDF overlay. Cleared when the particle count changes
 (the world rescales).
 
-**Rubber ducks** (`src/sim/duck.js`): any number of 2D rigid bodies (position
-+ rotation), added and removed with the panel's duck tools. Each hull is
-approximated by three circles, and `DuckFlock` appends every duck's circles to
-the obstacle list, so the existing boundary springs displace fluid around them
-in both modes on both backends. Ducks also collide with each other: every
+**Rigid bodies** (`src/sim/body.js`, catalogue in `bodytypes.js`): any number
+of 2D rigid bodies (position + rotation) of any type — floating ducks, sinking
+bricks — added and removed with the panel's object tools. A body is nothing
+but a hull of circles, a mass, and a sprite; a new shape is one more entry in
+the `BODY_TYPES` table. `BodyFlock` appends every body's hull circles to the
+obstacle list, so the existing boundary springs displace fluid around them in
+both modes on both backends. Bodies also collide with each other: every
 hull-circle pair gets that same spring-damper on the CPU, applied equal and
-opposite with the per-circle masses combined as a reduced mass, so a crowd
-rafts on the surface instead of interpenetrating.
-The fluid→duck force is the Newton's-third-law reaction of those
-springs, summed over all particles by one GPU reduction per duck per frame
-(`solver.sampleDuckForce`): WebGL2 additive-blends per-particle contributions
+opposite with the per-circle masses combined as a reduced mass, so a crowd of
+ducks rafts on the surface and a heavy brick shoves lighter bodies aside.
+The fluid→body force is the Newton's-third-law reaction of those springs,
+summed over all particles by one GPU reduction per body per frame
+(`solver.sampleBodyForce`): WebGL2 additive-blends per-particle contributions
 into a 1×1 float target and reads back synchronously; WebGPU accumulates
 fixed-point atomics and reads back asynchronously (the body integrates with a
-frame-stale force). Buoyancy is emergent — pressure presses particles into
-the spring zone until the contact sum carries the duck's weight — and the
-center of mass sits below the hull-circle centers, which gives the
-metacentric righting torque that keeps the duck upright. The visible duck is
-a polygon mesh (body/wing/head/beak/eye triangle fans) drawn by both
-renderers with the rigid transform.
+frame-stale force). Buoyancy is emergent — pressure presses particles into the
+spring zone until the contact sum carries the body's weight, so whether a body
+floats or sinks follows from its density (`densityRel`) alone — and the center
+of mass sits below the hull-circle centers, giving the metacentric righting
+torque that keeps a duck upright. The visible body is a transparent PNG
+(generated analytically in the body frame by `tools/make-sprites.mjs`) drawn on
+one textured quad by both renderers with the rigid transform.
 
 ### Scaling to large counts
 

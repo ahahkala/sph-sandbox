@@ -1,13 +1,14 @@
 // Pointer interaction. Normal mode: left-drag pushes fluid, right-drag
-// pulls it; a drag starting on a duck grabs it instead (release to
+// pulls it; a drag starting on a rigid body grabs it instead (release to
 // throw). Obstacle-draw mode (toggle "O"): left-drag stamps circular
 // walls, right-drag erases them. Eraser mode (toggle "E"): any drag
-// erases obstacles near the cursor. Duck add/remove modes: a click spawns
-// a duck at the cursor, or removes the duck under it.
+// erases obstacles near the cursor. Object add/remove modes: a click spawns
+// the object picked in the panel, or removes whichever one is under the
+// cursor.
 
 import { WORLD_HEIGHT } from "../config.js";
 
-export function setupPointer(canvas, solver, params, ducks, world) {
+export function setupPointer(canvas, solver, params, bodies, world) {
   const toWorld = (e) => {
     const rect = canvas.getBoundingClientRect();
     return {
@@ -17,7 +18,7 @@ export function setupPointer(canvas, solver, params, ducks, world) {
   };
 
   let drawing = 0; // 0 = off, 1 = stamping, -1 = erasing
-  let draggingDuck = false;
+  let draggingBody = false;
 
   const stamp = (w) => {
     const r = params.obstacleRadius * (solver.world.h / WORLD_HEIGHT);
@@ -38,15 +39,15 @@ export function setupPointer(canvas, solver, params, ducks, world) {
   canvas.addEventListener("pointerdown", (e) => {
     canvas.setPointerCapture(e.pointerId);
     const w = toWorld(e);
-    if (params.addDucks) {
-      ducks.spawn(world, w.x, w.y); // one per click, not per drag
-    } else if (params.removeDucks) {
-      ducks.removeAt(w.x, w.y);
+    if (params.addBodies) {
+      bodies.spawn(world, w.x, w.y); // picked type, one per click, not per drag
+    } else if (params.removeBodies) {
+      bodies.removeAt(w.x, w.y);
     } else if (params.drawObstacles || params.eraseObstacles) {
       drawing = (params.eraseObstacles || e.button === 2) ? -1 : 1;
       stamp(w);
-    } else if (ducks && ducks.startDrag(w.x, w.y)) {
-      draggingDuck = true; // grab the duck instead of pushing fluid
+    } else if (bodies && bodies.startDrag(w.x, w.y)) {
+      draggingBody = true; // grab the object instead of pushing fluid
     } else {
       solver.pointer.x = w.x;
       solver.pointer.y = w.y;
@@ -59,8 +60,8 @@ export function setupPointer(canvas, solver, params, ducks, world) {
     const w = toWorld(e);
     if (drawing !== 0) {
       stamp(w);
-    } else if (draggingDuck) {
-      ducks.dragTo(w.x, w.y);
+    } else if (draggingBody) {
+      bodies.dragTo(w.x, w.y);
     } else if (solver.pointer.active) {
       solver.pointer.x = w.x;
       solver.pointer.y = w.y;
@@ -69,9 +70,9 @@ export function setupPointer(canvas, solver, params, ducks, world) {
   const release = () => {
     solver.pointer.active = false;
     drawing = 0;
-    if (draggingDuck) {
-      ducks.endDrag(); // the duck keeps its velocity: release mid-swing to throw
-      draggingDuck = false;
+    if (draggingBody) {
+      bodies.endDrag(); // the body keeps its velocity: release mid-swing to throw
+      draggingBody = false;
     }
   };
   canvas.addEventListener("pointerup", release);

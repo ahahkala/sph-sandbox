@@ -3,8 +3,8 @@
 // that a composite pass shades into a liquid surface. The composite pass
 // also draws the obstacle overlay.
 
-import { particleQuadWGSL, compositeWGSL, obstacleOverlayWGSL, duckWGSL } from "./wgsl.js";
-import { DUCK_MESH, DUCK_STRIDE } from "../sim/duck.js";
+import { particleQuadWGSL, compositeWGSL, obstacleOverlayWGSL, bodySpriteWGSL } from "./wgsl.js";
+import { BODY_TYPES, bodyType } from "../sim/bodytypes.js";
 
 const FIELD_SCALE = 0.5;
 const FIELD_AMP = 0.9;
@@ -77,49 +77,76 @@ export class WGPURenderer {
     });
     this.obstacleBind = null;
 
-    // duck mesh: static vertex buffer, transform in a small uniform
-    const duckModule = device.createShaderModule({ code: duckWGSL });
-    this.pDuck = device.createRenderPipeline({
+    // rigid-body sprites: an attribute-less textured quad per body
+    const bodyModule = device.createShaderModule({ code: bodySpriteWGSL });
+    this.pBody = device.createRenderPipeline({
       layout: "auto",
-      vertex: {
-        module: duckModule, entryPoint: "vs",
-        buffers: [{
-          arrayStride: DUCK_STRIDE * 4,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: "float32x2" },
-            { shaderLocation: 1, offset: 8, format: "float32x3" },
-          ],
+      vertex: { module: bodyModule, entryPoint: "vs" },
+      fragment: {
+        module: bodyModule, entryPoint: "fs",
+        targets: [{
+          format: this.format,
+          blend: {
+            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+          },
         }],
       },
-      fragment: { module: duckModule, entryPoint: "fs", targets: [{ format: this.format }] },
-      primitive: { topology: "triangle-list" },
+      primitive: { topology: "triangle-strip" },
     });
-    this.duckVB = device.createBuffer({
-      size: DUCK_MESH.byteLength,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(this.duckVB, 0, DUCK_MESH);
-    this.duckData = new Float32Array(8); // struct DuckDraw (32 bytes)
-    // one uniform buffer per duck: the poses differ within a frame, and
+    this.bodyData = new Float32Array(12); // struct BodyDraw (48 bytes)
+    // one uniform buffer per body: the poses differ within a frame, and
     // queue.writeBuffer would otherwise leave every draw with the last pose
-    this.duckSlots = [];
+    this.bodySlots = [];
+    this.spriteViews = {}; // body type -> GPUTextureView, filled in on load
+    this.loadSprites();
 
     this.fieldTex = null;
     this.bindCache = new WeakMap(); // per posVel buffer bind groups
   }
 
-  mkDuckSlot() {
-    const buf = this.device.createBuffer({
-      size: this.duckData.byteLength,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    return {
-      buf,
-      bind: this.device.createBindGroup({
-        layout: this.pDuck.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: buf } }],
-      }),
-    };
+  // One texture per body type, fetched and decoded asynchronously; bodies
+  // whose sprite hasn't arrived are skipped for a frame or two.
+  async loadSprites() {
+    for (const [name, type] of Object.entries(BODY_TYPES)) {
+      const bitmap = await createImageBitmap(await (await fetch(type.sprite)).blob());
+      const tex = this.device.createTexture({
+        size: [bitmap.width, bitmap.height],
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      this.device.queue.copyExternalImageToTexture({ source: bitmap }, { texture: tex },
+        [bitmap.width, bitmap.height]);
+      this.spriteViews[name] = tex.createView();
+    }
+  }
+
+  // A slot holds one body's uniform buffer plus its bind groups, one per
+  // body type — the type in a given slot changes as bodies come and go.
+  bodySlot(i, typeName) {
+    let slot = this.bodySlots[i];
+    if (!slot) {
+      slot = {
+        buf: this.device.createBuffer({
+          size: this.bodyData.byteLength,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        }),
+        binds: {},
+      };
+      this.bodySlots[i] = slot;
+    }
+    if (!slot.binds[typeName]) {
+      slot.binds[typeName] = this.device.createBindGroup({
+        layout: this.pBody.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: slot.buf } },
+          { binding: 1, resource: this.sampler },
+          { binding: 2, resource: this.spriteViews[typeName] },
+        ],
+      });
+    }
+    return slot;
   }
 
   mkUniform() {
@@ -195,27 +222,34 @@ export class WGPURenderer {
     }
     dev.queue.writeBuffer(this.obstacleBuf, 0, this.obstacleData);
 
-    const poses = p.duckPoses;
+    const poses = p.bodyPoses;
+    const drawable = [];
     for (let i = 0; i < poses.length; i++) {
-      if (!this.duckSlots[i]) this.duckSlots[i] = this.mkDuckSlot();
       const pose = poses[i];
-      const dd = this.duckData;
+      if (!this.spriteViews[pose.type]) continue; // sprite still loading
+      const slot = this.bodySlot(i, pose.type);
+      const r = bodyType(pose.type).rect;
+      const dd = this.bodyData;
       dd[0] = pose.x;
       dd[1] = pose.y;
       dd[2] = Math.cos(pose.angle);
       dd[3] = Math.sin(pose.angle);
-      dd[4] = world.w;
-      dd[5] = world.h;
-      dd[6] = pose.scale;
-      dev.queue.writeBuffer(this.duckSlots[i].buf, 0, dd);
+      dd[4] = r.x0;
+      dd[5] = r.y0;
+      dd[6] = r.x1;
+      dd[7] = r.y1;
+      dd[8] = world.w;
+      dd[9] = world.h;
+      dd[10] = pose.scale;
+      dev.queue.writeBuffer(slot.buf, 0, dd);
+      drawable.push(slot.binds[pose.type]);
     }
-    const drawDuck = (pass) => {
-      if (poses.length === 0) return;
-      pass.setPipeline(this.pDuck);
-      pass.setVertexBuffer(0, this.duckVB);
-      for (let i = 0; i < poses.length; i++) {
-        pass.setBindGroup(0, this.duckSlots[i].bind);
-        pass.draw(DUCK_MESH.length / DUCK_STRIDE);
+    const drawBodies = (pass) => {
+      if (drawable.length === 0) return;
+      pass.setPipeline(this.pBody);
+      for (const bind of drawable) {
+        pass.setBindGroup(0, bind);
+        pass.draw(4);
       }
     };
 
@@ -255,7 +289,7 @@ export class WGPURenderer {
       pass.setPipeline(this.pComposite);
       pass.setBindGroup(0, this.compositeBind);
       pass.draw(3);
-      drawDuck(pass);
+      drawBodies(pass);
       pass.end();
     } else {
       const half = Math.max(1, p.h * (this.canvas.height / world.h) * 0.65);
@@ -283,7 +317,7 @@ export class WGPURenderer {
         pass.setBindGroup(0, this.obstacleBind);
         pass.draw(3);
       }
-      drawDuck(pass);
+      drawBodies(pass);
       pass.end();
     }
     dev.queue.submit([enc.finish()]);

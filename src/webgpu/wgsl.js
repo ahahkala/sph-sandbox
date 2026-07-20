@@ -332,13 +332,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-// Duck reaction-force reduction (see WebGL2 duckForceVS): every particle
-// recomputes its boundary spring against the duck hull circles; the negated
-// force + torque about the duck center are summed with fixed-point atomics
+// Body reaction-force reduction (see WebGL2 bodyForceVS): every particle
+// recomputes its boundary spring against the body hull circles; the negated
+// force + torque about the body center are summed with fixed-point atomics
 // (D.fix units per force unit). P.wallC is written pre-halved in PBF mode.
-export const duckForceWGSL = /* wgsl */ `
+export const bodyForceWGSL = /* wgsl */ `
 ${PARAMS_STRUCT}
-struct DuckParams {
+struct BodyParams {
   center: vec2f,
   count: f32,
   fix: f32,                  // fixed-point scale
@@ -346,7 +346,7 @@ struct DuckParams {
 }
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> posVel: array<vec4f>;
-@group(0) @binding(2) var<uniform> D: DuckParams;
+@group(0) @binding(2) var<uniform> D: BodyParams;
 @group(0) @binding(3) var<storage, read_write> outF: array<atomic<i32>, 3>;
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -363,7 +363,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let nrm = d / dist;
       let vn = dot(pv.zw, nrm);
       let mag = max(P.wallK * pen - P.wallC * min(vn, 0.0), 0.0);
-      F = F - mag * P.mass * nrm;   // reaction on the duck
+      F = F - mag * P.mass * nrm;   // reaction on the body
       hit = true;
     }
   }
@@ -634,33 +634,42 @@ fn fs(in: VSOut) -> @location(0) vec4f {
 }
 `;
 
-// Duck mesh: rotate + translate the local-space triangle list (interleaved
-// x, y, r, g, b vertex buffer shared with the WebGL2 renderer).
-export const duckWGSL = /* wgsl */ `
-struct DuckDraw {
+// Rigid-body sprite: one textured quad spanning the body type's local-unit
+// rect, rotated + translated (mirrors the WebGL2 bodySpriteVS/FS).
+export const bodySpriteWGSL = /* wgsl */ `
+struct BodyDraw {
   pose: vec4f,   // x, y, cos(angle), sin(angle)
+  rect: vec4f,   // local-unit quad: x0, y0 (top), x1, y1
   world: vec2f,
   scale: f32,
   pad0: f32,
 }
-@group(0) @binding(0) var<uniform> D: DuckDraw;
+@group(0) @binding(0) var<uniform> D: BodyDraw;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var sprite: texture_2d<f32>;
 struct VSOut {
   @builtin(position) pos: vec4f,
-  @location(0) col: vec3f,
+  @location(0) uv: vec2f,
 }
 @vertex
-fn vs(@location(0) aPos: vec2f, @location(1) aCol: vec3f) -> VSOut {
-  let p = D.pose.xy + vec2f(aPos.x * D.pose.z - aPos.y * D.pose.w,
-                            aPos.x * D.pose.w + aPos.y * D.pose.z) * D.scale;
+fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
+  let uv = vec2f(f32(vi & 1u), f32((vi >> 1u) & 1u));
+  let local = mix(D.rect.xy, D.rect.zw, uv);
+  let p = D.pose.xy + vec2f(local.x * D.pose.z - local.y * D.pose.w,
+                            local.x * D.pose.w + local.y * D.pose.z) * D.scale;
   var clip = (p / D.world) * 2.0 - 1.0;
   clip.y = -clip.y;
   var out: VSOut;
   out.pos = vec4f(clip, 0.0, 1.0);
-  out.col = aCol;
+  out.uv = uv;
   return out;
 }
 @fragment
-fn fs(in: VSOut) -> @location(0) vec4f { return vec4f(in.col, 1.0); }
+fn fs(in: VSOut) -> @location(0) vec4f {
+  let c = textureSample(sprite, samp, in.uv);
+  if (c.a < 0.004) { discard; }
+  return c;
+}
 `;
 
 export const compositeWGSL = /* wgsl */ `

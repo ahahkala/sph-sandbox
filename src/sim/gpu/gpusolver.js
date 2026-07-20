@@ -9,7 +9,7 @@
 // directly. See shaders.js / pbfshaders.js for the pass details.
 
 import { createProgram, getUniforms, createTarget, deleteTarget, attachDepthStencil, createTexture, ObstacleTexture } from "../../render/glutils.js";
-import { scatterVS, scatterFS, densityFS, forceFS, duckForceVS, duckForceFS } from "./shaders.js";
+import { scatterVS, scatterFS, densityFS, forceFS, bodyForceVS, bodyForceFS } from "./shaders.js";
 import { predictFS, lambdaFS, deltaPFS, finalizeFS } from "./pbfshaders.js";
 import { TEX_WIDTH, WORLD_HEIGHT as REF_WORLD_H } from "../../config.js";
 
@@ -51,7 +51,7 @@ export class GPUSolver {
       lambda: [quadVS, lambdaFS],
       deltaP: [quadVS, deltaPFS],
       finalize: [quadVS, finalizeFS],
-      duckForce: [duckForceVS, duckForceFS],
+      bodyForce: [bodyForceVS, bodyForceFS],
     };
     this.prog = {};
     this.u = {};
@@ -74,14 +74,14 @@ export class GPUSolver {
     this.pointer = { x: 0, y: 0, active: false, mode: 1 };
     this.obstacleTex = new ObstacleTexture(gl);
 
-    // 1x1 accumulator for the duck-force reduction; RGBA32F blending needs
+    // 1x1 accumulator for the body-force reduction; RGBA32F blending needs
     // EXT_float_blend, otherwise fall back to half float (scaled output)
     this.floatBlend = !!gl.getExtension("EXT_float_blend");
-    this.duckTarget = this.floatBlend
+    this.bodyTarget = this.floatBlend
       ? createTarget(gl, 1, 1, gl.RGBA32F, gl.RGBA, gl.FLOAT, gl.NEAREST)
       : createTarget(gl, 1, 1, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.NEAREST);
-    this.duckPixel = new Float32Array(4);
-    this.duckData = new Float32Array(8 * 4);
+    this.bodyPixel = new Float32Array(4);
+    this.bodyData = new Float32Array(8 * 4);
 
     this.posVel = [null, null]; // ping-pong state
     this.aux = null;            // PBF iteration scratch
@@ -295,9 +295,9 @@ export class GPUSolver {
 
   setCollideUniforms(u) {
     const gl = this.gl;
-    const duck = this.params.duckCircles;
-    const obstacles = duck.length
-      ? this.params.obstacles.concat(duck)
+    const body = this.params.bodyCircles;
+    const obstacles = body.length
+      ? this.params.obstacles.concat(body)
       : this.params.obstacles;
     this.obstacleTex.upload(obstacles, 7);
     gl.uniform1i(u.uObstacleTex, 7);
@@ -388,18 +388,18 @@ export class GPUSolver {
     });
   }
 
-  // Sum the fluid's reaction to the duck hull's boundary springs over all
-  // particles (see duckForceVS). One tiny sync readback per frame.
-  sampleDuckForce(circles, cx, cy) {
+  // Sum the fluid's reaction to the body hull's boundary springs over all
+  // particles (see bodyForceVS). One tiny sync readback per frame.
+  sampleBodyForce(circles, cx, cy) {
     const gl = this.gl;
     const p = this.params;
     const outScale = 1 / 64; // headroom for the half-float fallback target
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.duckTarget.fbo);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.bodyTarget.fbo);
     gl.viewport(0, 0, 1, 1);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.useProgram(this.prog.duckForce);
-    const u = this.u.duckForce;
+    gl.useProgram(this.prog.bodyForce);
+    const u = this.u.bodyForce;
     this.bindTex(u.uPosVel, 0, this.posVel[this.cur].tex);
     gl.uniform1i(u.uTexWidth, TEX_WIDTH);
     gl.uniform1i(u.uCount, this.count);
@@ -409,33 +409,33 @@ export class GPUSolver {
     gl.uniform1f(u.uMargin, this.h);
     gl.uniform1f(u.uMass, p.mass);
     gl.uniform1f(u.uOutScale, outScale);
-    gl.uniform2f(u.uDuckCenter, cx, cy);
+    gl.uniform2f(u.uBodyCenter, cx, cy);
     const n = Math.min(circles.length, 8);
-    gl.uniform1i(u.uDuckCount, n);
-    this.duckData.fill(0);
+    gl.uniform1i(u.uBodyCount, n);
+    this.bodyData.fill(0);
     for (let k = 0; k < n; k++) {
-      this.duckData[k * 4] = circles[k].x;
-      this.duckData[k * 4 + 1] = circles[k].y;
-      this.duckData[k * 4 + 2] = circles[k].r;
+      this.bodyData[k * 4] = circles[k].x;
+      this.bodyData[k * 4 + 1] = circles[k].y;
+      this.bodyData[k * 4 + 2] = circles[k].r;
     }
-    gl.uniform4fv(u.uDuck, this.duckData);
+    gl.uniform4fv(u.uBody, this.bodyData);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
     gl.bindVertexArray(this.emptyVAO);
     gl.drawArrays(gl.POINTS, 0, this.count);
     gl.bindVertexArray(null);
     gl.disable(gl.BLEND);
-    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, this.duckPixel);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, this.bodyPixel);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     // PBF applies the boundary nudge once per constraint iteration, so the
     // particles receive iterations x the impulse — mirror that in the
-    // reaction or the duck rides too deep in PBF
+    // reaction or the body rides too deep in PBF
     const iters = p.physics === "pbf" ? Math.max(1, Math.round(p.pbfIterations) | 1) : 1;
     const s = iters / outScale;
     return {
-      fx: this.duckPixel[0] * s,
-      fy: this.duckPixel[1] * s,
-      torque: this.duckPixel[2] * s,
+      fx: this.bodyPixel[0] * s,
+      fy: this.bodyPixel[1] * s,
+      torque: this.bodyPixel[2] * s,
     };
   }
 

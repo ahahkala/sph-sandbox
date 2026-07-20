@@ -133,29 +133,37 @@ void main() {
   fragColor = vec4(mix(bg, water, edge), 1.0);
 }`;
 
-// --- duck mesh: rotate + translate the local-space triangle list ----------
-export const duckVS = `#version 300 es
+// --- rigid-body sprite: one textured quad, rotated + translated ----------
+// Attribute-less: the quad corner comes from gl_VertexID and spans the
+// body type's local-unit rect, so the artwork sits where the hull does.
+export const bodySpriteVS = `#version 300 es
 precision highp float;
-layout(location = 0) in vec2 aPos;
-layout(location = 1) in vec3 aCol;
 uniform vec2 uWorld;
 uniform vec4 uPose;    // x, y, cos(angle), sin(angle)
 uniform float uScale;
-out vec3 vCol;
+uniform vec4 uRect;    // local-unit sprite quad: x0, y0 (top), x1, y1
+out vec2 vUV;
 void main() {
-  vec2 p = uPose.xy + vec2(aPos.x * uPose.z - aPos.y * uPose.w,
-                           aPos.x * uPose.w + aPos.y * uPose.z) * uScale;
+  vec2 uv = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+  vec2 local = mix(uRect.xy, uRect.zw, uv);
+  vec2 p = uPose.xy + vec2(local.x * uPose.z - local.y * uPose.w,
+                           local.x * uPose.w + local.y * uPose.z) * uScale;
   vec2 clip = (p / uWorld) * 2.0 - 1.0;
   clip.y = -clip.y;
   gl_Position = vec4(clip, 0.0, 1.0);
-  vCol = aCol;
+  vUV = uv;  // v = 0 is the rect's top edge and the image's first row
 }`;
 
-export const duckFS = `#version 300 es
+export const bodySpriteFS = `#version 300 es
 precision highp float;
-in vec3 vCol;
+in vec2 vUV;
+uniform sampler2D uSprite;
 out vec4 fragColor;
-void main() { fragColor = vec4(vCol, 1.0); }`;
+void main() {
+  vec4 c = texture(uSprite, vUV);
+  if (c.a < 0.004) discard;
+  fragColor = c;
+}`;
 
 // --- obstacle overlay: analytic circle SDF drawn over the fluid ----------
 export const obstacleFS = `#version 300 es
